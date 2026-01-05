@@ -201,3 +201,29 @@ Resume tokens are engine-specific. Each engine has its own format:
 - Other engines follow similar patterns
 
 The AutoRouter automatically routes messages to the correct engine based on resume tokens.
+
+## Release Checklist
+
+Follow these steps when preparing a release:
+
+### 1. Version Update
+- Update version in `pyproject.toml`
+
+### 2. Code Quality
+- Run `uv run ruff check .` - fix any linting issues
+- Run `uv run ruff format .` - ensure consistent formatting
+- Run `uv run pytest` - ensure all tests pass
+
+### 3. Dependencies
+- Review `uv.lock` for any pending changes
+- Ensure `pyproject.toml` dependencies are correct and pinned appropriately
+
+### 4. Documentation
+- Update `CHANGELOG.md` with new features/fixes for this release
+- Update `README.md` with any new features/changes
+- Ensure `CLAUDE.md` reflects current architecture
+
+### 5. Git Hygiene
+- Commit any pending changes
+- Ensure main branch is clean
+- Tag the release (e.g., `v0.1.2`) - this triggers the release workflow
