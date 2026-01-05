@@ -1,7 +1,7 @@
 [project]
 name = "pochi"
 authors = [{name = "asianviking"}]
-version = "0.1.0"
+version = "0.1.1"
 description = "Multi-model AI agent Telegram bot for multi-folder workspaces."
 readme = "readme.md"
 license = { file = "LICENSE" }
