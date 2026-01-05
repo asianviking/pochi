@@ -54,6 +54,10 @@ def make_route(
     )
 
 
+# Default admin user ID for tests
+DEFAULT_USER_ID = 12345
+
+
 class TestHandleSlashCommand:
     """Tests for handle_slash_command function."""
 
@@ -61,14 +65,18 @@ class TestHandleSlashCommand:
     async def test_unknown_command_does_nothing(self, mock_manager: MagicMock) -> None:
         """Test that unknown commands don't send any response."""
         route = make_route("unknown_command")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_not_called()
 
     @pytest.mark.anyio
     async def test_help_command(self, mock_manager: MagicMock) -> None:
         """Test /help command shows help text."""
         route = make_route("help")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]  # Second positional arg is text
@@ -81,7 +89,9 @@ class TestHandleSlashCommand:
     async def test_list_command_empty(self, mock_manager: MagicMock) -> None:
         """Test /list command when no folders exist."""
         route = make_route("list")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
@@ -104,7 +114,9 @@ class TestHandleSlashCommand:
         (tmp_path / "backend").mkdir()
 
         route = make_route("list")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
@@ -115,7 +127,9 @@ class TestHandleSlashCommand:
     async def test_status_command(self, mock_manager: MagicMock) -> None:
         """Test /status command."""
         route = make_route("status")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
@@ -128,7 +142,9 @@ class TestHandleSlashCommand:
     async def test_clone_command_no_args(self, mock_manager: MagicMock) -> None:
         """Test /clone command without arguments shows usage."""
         route = make_route("clone", "")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
@@ -143,7 +159,9 @@ class TestHandleSlashCommand:
             name="existing", path="existing"
         )
         route = make_route("clone", "existing git@github.com:user/repo.git")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
@@ -153,7 +171,9 @@ class TestHandleSlashCommand:
     async def test_create_command_no_args(self, mock_manager: MagicMock) -> None:
         """Test /create command without arguments shows usage."""
         route = make_route("create", "")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
@@ -168,7 +188,9 @@ class TestHandleSlashCommand:
             name="existing", path="existing"
         )
         route = make_route("create", "existing")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
@@ -178,7 +200,9 @@ class TestHandleSlashCommand:
     async def test_add_command_no_args(self, mock_manager: MagicMock) -> None:
         """Test /add command without arguments shows usage."""
         route = make_route("add", "")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
@@ -193,7 +217,9 @@ class TestHandleSlashCommand:
             name="existing", path="existing"
         )
         route = make_route("add", "existing /some/path")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
@@ -203,7 +229,9 @@ class TestHandleSlashCommand:
     async def test_add_command_path_not_exists(self, mock_manager: MagicMock) -> None:
         """Test /add command when path doesn't exist."""
         route = make_route("add", "newfolder /nonexistent/path")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
@@ -219,7 +247,9 @@ class TestHandleSlashCommand:
         add_path.mkdir()
 
         route = make_route("add", f"newfolder {add_path}")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
 
         # Should call add_folder
         mock_manager.add_folder.assert_called_once()
@@ -228,7 +258,9 @@ class TestHandleSlashCommand:
     async def test_remove_command_no_args(self, mock_manager: MagicMock) -> None:
         """Test /remove command without arguments shows usage."""
         route = make_route("remove", "")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
@@ -240,7 +272,9 @@ class TestHandleSlashCommand:
     ) -> None:
         """Test /remove command when folder not found."""
         route = make_route("remove", "nonexistent")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
@@ -255,7 +289,9 @@ class TestHandleSlashCommand:
             name="todelete", path="todelete", topic_id=200
         )
         route = make_route("remove", "todelete")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
 
         # Folder should be removed
         assert "todelete" not in workspace_config.folders
@@ -264,7 +300,9 @@ class TestHandleSlashCommand:
     async def test_engine_command_show_status(self, mock_manager: MagicMock) -> None:
         """Test /engine command without args shows status."""
         route = make_route("engine", "")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
@@ -275,7 +313,9 @@ class TestHandleSlashCommand:
     async def test_engine_command_unknown_engine(self, mock_manager: MagicMock) -> None:
         """Test /engine command with unknown engine."""
         route = make_route("engine", "unknown_engine_xyz")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
@@ -288,7 +328,9 @@ class TestHandleSlashCommand:
         """Test /engine command when engine is already default."""
         workspace_config.default_engine = "claude"
         route = make_route("engine", "claude")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
         mock_manager.send_to_topic.assert_called_once()
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
@@ -301,10 +343,156 @@ class TestHandleSlashCommand:
         mock_manager.add_folder.side_effect = Exception("Test error")
 
         route = make_route("create", "newfolder")
-        await handle_slash_command(mock_manager, route, reply_to_message_id=1)
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
 
         # Should send error message
         calls = mock_manager.send_to_topic.call_args_list
         # Last call should be error message
         last_call_text = calls[-1][0][1]
         assert "Error" in last_call_text
+
+
+class TestUserManagementCommands:
+    """Tests for user management commands (/users, /adduser, /removeuser)."""
+
+    @pytest.mark.anyio
+    async def test_users_command_no_admin(self, mock_manager: MagicMock) -> None:
+        """Test /users command when no admin is set."""
+        route = make_route("users")
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
+        mock_manager.send_to_topic.assert_called_once()
+        call_args = mock_manager.send_to_topic.call_args
+        text = call_args[0][1]
+        assert "Authorized Users" in text
+        assert "(not set)" in text
+
+    @pytest.mark.anyio
+    async def test_users_command_with_admin(
+        self, mock_manager: MagicMock, workspace_config: WorkspaceConfig
+    ) -> None:
+        """Test /users command with admin set."""
+        workspace_config.admin_user = 123456
+        workspace_config.allowed_users = [111, 222]
+        route = make_route("users")
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
+        mock_manager.send_to_topic.assert_called_once()
+        call_args = mock_manager.send_to_topic.call_args
+        text = call_args[0][1]
+        assert "123456" in text
+        assert "111" in text
+        assert "222" in text
+
+    @pytest.mark.anyio
+    async def test_adduser_command_not_admin(
+        self, mock_manager: MagicMock, workspace_config: WorkspaceConfig
+    ) -> None:
+        """Test /adduser command when user is not admin."""
+        workspace_config.admin_user = 999999  # Different user is admin
+        route = make_route("adduser", "123456")
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
+        mock_manager.send_to_topic.assert_called_once()
+        call_args = mock_manager.send_to_topic.call_args
+        text = call_args[0][1]
+        assert "Only the admin" in text
+
+    @pytest.mark.anyio
+    async def test_adduser_command_no_args(
+        self, mock_manager: MagicMock, workspace_config: WorkspaceConfig
+    ) -> None:
+        """Test /adduser command without arguments."""
+        workspace_config.admin_user = DEFAULT_USER_ID
+        route = make_route("adduser", "")
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
+        mock_manager.send_to_topic.assert_called_once()
+        call_args = mock_manager.send_to_topic.call_args
+        text = call_args[0][1]
+        assert "Usage:" in text
+
+    @pytest.mark.anyio
+    async def test_adduser_command_success(
+        self, mock_manager: MagicMock, workspace_config: WorkspaceConfig
+    ) -> None:
+        """Test /adduser command adds a guest user."""
+        workspace_config.admin_user = DEFAULT_USER_ID
+        route = make_route("adduser", "987654")
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
+        mock_manager.send_to_topic.assert_called_once()
+        call_args = mock_manager.send_to_topic.call_args
+        text = call_args[0][1]
+        assert "Added user" in text
+        assert 987654 in workspace_config.allowed_users
+
+    @pytest.mark.anyio
+    async def test_adduser_command_already_guest(
+        self, mock_manager: MagicMock, workspace_config: WorkspaceConfig
+    ) -> None:
+        """Test /adduser command when user is already a guest."""
+        workspace_config.admin_user = DEFAULT_USER_ID
+        workspace_config.allowed_users = [987654]
+        route = make_route("adduser", "987654")
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
+        mock_manager.send_to_topic.assert_called_once()
+        call_args = mock_manager.send_to_topic.call_args
+        text = call_args[0][1]
+        assert "already a guest" in text
+
+    @pytest.mark.anyio
+    async def test_removeuser_command_not_admin(
+        self, mock_manager: MagicMock, workspace_config: WorkspaceConfig
+    ) -> None:
+        """Test /removeuser command when user is not admin."""
+        workspace_config.admin_user = 999999  # Different user is admin
+        route = make_route("removeuser", "123456")
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
+        mock_manager.send_to_topic.assert_called_once()
+        call_args = mock_manager.send_to_topic.call_args
+        text = call_args[0][1]
+        assert "Only the admin" in text
+
+    @pytest.mark.anyio
+    async def test_removeuser_command_success(
+        self, mock_manager: MagicMock, workspace_config: WorkspaceConfig
+    ) -> None:
+        """Test /removeuser command removes a guest user."""
+        workspace_config.admin_user = DEFAULT_USER_ID
+        workspace_config.allowed_users = [987654]
+        route = make_route("removeuser", "987654")
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
+        mock_manager.send_to_topic.assert_called_once()
+        call_args = mock_manager.send_to_topic.call_args
+        text = call_args[0][1]
+        assert "Removed user" in text
+        assert 987654 not in workspace_config.allowed_users
+
+    @pytest.mark.anyio
+    async def test_removeuser_command_not_guest(
+        self, mock_manager: MagicMock, workspace_config: WorkspaceConfig
+    ) -> None:
+        """Test /removeuser command when user is not a guest."""
+        workspace_config.admin_user = DEFAULT_USER_ID
+        route = make_route("removeuser", "987654")
+        await handle_slash_command(
+            mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
+        )
+        mock_manager.send_to_topic.assert_called_once()
+        call_args = mock_manager.send_to_topic.call_args
+        text = call_args[0][1]
+        assert "not a guest" in text

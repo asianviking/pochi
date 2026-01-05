@@ -163,6 +163,9 @@ GENERAL_SLASH_COMMANDS = {
     "remove",
     "status",
     "help",
+    "users",
+    "adduser",
+    "removeuser",
 }
 
 

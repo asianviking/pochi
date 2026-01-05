@@ -36,6 +36,7 @@ from ..telegram import BotClient
 from .commands import handle_slash_command
 from .config import (
     WorkspaceConfig,
+    save_workspace_config,
 )
 from .manager import WorkspaceManager
 from .orchestrator import prepend_orchestrator_context
@@ -573,6 +574,29 @@ async def run_workspace_loop(
                 user_msg_id = msg["message_id"]
                 message_thread_id = msg.get("message_thread_id")
 
+                # Extract user ID for authorization
+                user_id = msg.get("from", {}).get("id")
+                if user_id is None:
+                    # No user ID - skip (shouldn't happen for user messages)
+                    continue
+
+                # Bootstrap: first user becomes admin
+                if cfg.workspace.admin_user is None:
+                    cfg.workspace.admin_user = user_id
+                    save_workspace_config(cfg.workspace)
+                    logger.info(
+                        "auth.admin_bootstrap",
+                        user_id=user_id,
+                    )
+
+                # Authorization check - silently ignore unauthorized users
+                if not cfg.workspace.is_authorized(user_id):
+                    logger.debug(
+                        "auth.unauthorized",
+                        user_id=user_id,
+                    )
+                    continue
+
                 # Handle /cancel command
                 if _is_cancel_command(text):
                     # First, try to cancel a running task if replying to it
@@ -614,6 +638,7 @@ async def run_workspace_loop(
                         cfg.workspace_manager,
                         route,
                         user_msg_id,
+                        user_id,
                     )
                     continue
 

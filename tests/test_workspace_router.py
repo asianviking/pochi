@@ -277,7 +277,18 @@ class TestGeneralSlashCommands:
 
     def test_general_commands_exist(self) -> None:
         """Test that expected commands are in GENERAL_SLASH_COMMANDS."""
-        expected = {"clone", "create", "add", "list", "remove", "status", "help"}
+        expected = {
+            "clone",
+            "create",
+            "add",
+            "list",
+            "remove",
+            "status",
+            "help",
+            "users",
+            "adduser",
+            "removeuser",
+        }
         assert expected == GENERAL_SLASH_COMMANDS
 
     def test_is_general_slash_command_true(self, tmp_path: Path) -> None:

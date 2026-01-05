@@ -229,6 +229,49 @@ Resume tokens are engine-specific. Each engine has its own format:
 
 The AutoRouter automatically routes messages to the correct engine based on resume tokens.
 
+## User Authentication
+
+Pochi includes user-level authentication to restrict bot access to authorized users only.
+
+### Configuration
+
+```toml
+# .pochi/workspace.toml
+[workspace]
+name = "my-workspace"
+telegram_group_id = -123456789
+bot_token = "..."
+admin_user = 123456789           # Telegram user ID of admin
+allowed_users = [987654321]      # Guest user IDs
+```
+
+### User Roles
+
+| Role | Can use bot | `/adduser` | `/removeuser` |
+|------|-------------|------------|---------------|
+| **Admin** | Yes | Yes | Yes |
+| **Guest** | Yes | No | No |
+| **Unauthorized** | No | No | No |
+
+### Bootstrap Flow
+
+1. Bot starts with no `admin_user` set
+2. First person to message the bot becomes admin automatically
+3. Admin uses `/adduser` to invite guests
+4. To change admin: manually edit `workspace.toml`
+
+### User Commands
+
+- `/users` - List admin and all guests (admin + guests can use)
+- `/adduser <id>` - Add a guest user (admin only)
+- `/removeuser <id>` - Remove a guest user (admin only)
+
+### Security Notes
+
+- Unauthorized users are silently ignored (no reply)
+- Users are identified by Telegram user ID (not @username)
+- Admin cannot be changed via commands (requires config edit)
+
 ## Release Checklist
 
 Follow these steps when preparing a release:

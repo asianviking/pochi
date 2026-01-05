@@ -21,10 +21,18 @@ async def handle_slash_command(
     manager: "WorkspaceManager",
     route: "RouteResult",
     reply_to_message_id: int,
+    user_id: int,
 ) -> None:
     """Handle a slash command in the General topic."""
     command = route.command
     args = route.command_args
+
+    # Commands that need user_id for authorization
+    user_commands = {
+        "users": _handle_users,
+        "adduser": _handle_adduser,
+        "removeuser": _handle_removeuser,
+    }
 
     handlers = {
         "clone": _handle_clone,
@@ -36,6 +44,24 @@ async def handle_slash_command(
         "engine": _handle_engine,
         "help": _handle_help,
     }
+
+    # Check if it's a user management command
+    if command in user_commands:
+        handler = user_commands[command]
+        try:
+            await handler(manager, args, reply_to_message_id, user_id)
+        except Exception as e:
+            logger.exception(
+                "workspace.command.error",
+                command=command,
+                error=str(e),
+            )
+            await manager.send_to_topic(
+                None,
+                f"❌ Error executing /{command}: {e}",
+                reply_to_message_id=reply_to_message_id,
+            )
+        return
 
     handler = handlers.get(command)
     if handler is None:
@@ -548,6 +574,16 @@ General Topic Commands:
   /help
     Show this help message
 
+User Management:
+  /users
+    List admin and guest users
+
+  /adduser <id>
+    Add a guest user (admin only)
+
+  /removeuser <id>
+    Remove a guest user (admin only)
+
 Worker Topic Commands:
   /ralph <prompt> [--max-iterations N]
     Run an iterative agent loop
@@ -560,5 +596,168 @@ Or just send a message to chat with the agent!
     await manager.send_to_topic(
         None,
         help_text,
+        reply_to_message_id=reply_to_message_id,
+    )
+
+
+async def _handle_users(
+    manager: "WorkspaceManager",
+    args: str,
+    reply_to_message_id: int,
+    user_id: int,
+) -> None:
+    """Handle /users - list admin and guest users."""
+    config = manager.config
+
+    lines = ["👥 Authorized Users", ""]
+
+    if config.admin_user is not None:
+        lines.append(f"Admin: `{config.admin_user}`")
+    else:
+        lines.append("Admin: (not set)")
+
+    if config.allowed_users:
+        lines.append("")
+        lines.append("Guests:")
+        for guest_id in config.allowed_users:
+            lines.append(f"  • `{guest_id}`")
+    else:
+        lines.append("")
+        lines.append("Guests: (none)")
+
+    await manager.send_to_topic(
+        None,
+        "\n".join(lines),
+        reply_to_message_id=reply_to_message_id,
+    )
+
+
+async def _handle_adduser(
+    manager: "WorkspaceManager",
+    args: str,
+    reply_to_message_id: int,
+    user_id: int,
+) -> None:
+    """Handle /adduser <id> - add a guest user (admin only)."""
+    config = manager.config
+
+    # Check if user is admin
+    if not config.is_admin(user_id):
+        await manager.send_to_topic(
+            None,
+            "❌ Only the admin can add users.",
+            reply_to_message_id=reply_to_message_id,
+        )
+        return
+
+    # Parse the user ID argument
+    args = args.strip()
+    if not args:
+        await manager.send_to_topic(
+            None,
+            "Usage: /adduser <telegram_user_id>\n\nExample: /adduser 123456789",
+            reply_to_message_id=reply_to_message_id,
+        )
+        return
+
+    try:
+        new_user_id = int(args.split()[0])
+    except ValueError:
+        await manager.send_to_topic(
+            None,
+            "❌ Invalid user ID. Must be a number.",
+            reply_to_message_id=reply_to_message_id,
+        )
+        return
+
+    # Try to add the user
+    if new_user_id == config.admin_user:
+        await manager.send_to_topic(
+            None,
+            "❌ That user is already the admin.",
+            reply_to_message_id=reply_to_message_id,
+        )
+        return
+
+    if not config.add_guest(new_user_id):
+        await manager.send_to_topic(
+            None,
+            f"❌ User `{new_user_id}` is already a guest.",
+            reply_to_message_id=reply_to_message_id,
+        )
+        return
+
+    # Save config
+    save_workspace_config(config)
+
+    await manager.send_to_topic(
+        None,
+        f"✓ Added user `{new_user_id}` as guest.",
+        reply_to_message_id=reply_to_message_id,
+    )
+
+
+async def _handle_removeuser(
+    manager: "WorkspaceManager",
+    args: str,
+    reply_to_message_id: int,
+    user_id: int,
+) -> None:
+    """Handle /removeuser <id> - remove a guest user (admin only)."""
+    config = manager.config
+
+    # Check if user is admin
+    if not config.is_admin(user_id):
+        await manager.send_to_topic(
+            None,
+            "❌ Only the admin can remove users.",
+            reply_to_message_id=reply_to_message_id,
+        )
+        return
+
+    # Parse the user ID argument
+    args = args.strip()
+    if not args:
+        await manager.send_to_topic(
+            None,
+            "Usage: /removeuser <telegram_user_id>\n\nExample: /removeuser 123456789",
+            reply_to_message_id=reply_to_message_id,
+        )
+        return
+
+    try:
+        target_user_id = int(args.split()[0])
+    except ValueError:
+        await manager.send_to_topic(
+            None,
+            "❌ Invalid user ID. Must be a number.",
+            reply_to_message_id=reply_to_message_id,
+        )
+        return
+
+    # Cannot remove admin
+    if target_user_id == config.admin_user:
+        await manager.send_to_topic(
+            None,
+            "❌ Cannot remove admin. Edit workspace.toml manually to change admin.",
+            reply_to_message_id=reply_to_message_id,
+        )
+        return
+
+    # Try to remove the user
+    if not config.remove_guest(target_user_id):
+        await manager.send_to_topic(
+            None,
+            f"❌ User `{target_user_id}` is not a guest.",
+            reply_to_message_id=reply_to_message_id,
+        )
+        return
+
+    # Save config
+    save_workspace_config(config)
+
+    await manager.send_to_topic(
+        None,
+        f"✓ Removed user `{target_user_id}` from guests.",
         reply_to_message_id=reply_to_message_id,
     )

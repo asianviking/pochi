@@ -56,6 +56,35 @@ class WorkspaceConfig:
     folders: dict[str, FolderConfig] = field(default_factory=dict)
     ralph: RalphConfig = field(default_factory=RalphConfig)
     default_engine: str = "claude"
+    admin_user: int | None = None  # Telegram user ID of admin (set on first message)
+    allowed_users: list[int] = field(default_factory=list)  # Guest user IDs
+
+    def is_admin(self, user_id: int) -> bool:
+        """Check if a user is the admin."""
+        return self.admin_user is not None and self.admin_user == user_id
+
+    def is_authorized(self, user_id: int) -> bool:
+        """Check if a user is authorized (admin or guest)."""
+        if self.admin_user is None:
+            # No admin set yet - anyone can be the first user
+            return True
+        return self.admin_user == user_id or user_id in self.allowed_users
+
+    def add_guest(self, user_id: int) -> bool:
+        """Add a guest user. Returns True if added, False if already exists."""
+        if user_id == self.admin_user:
+            return False  # Can't add admin as guest
+        if user_id in self.allowed_users:
+            return False
+        self.allowed_users.append(user_id)
+        return True
+
+    def remove_guest(self, user_id: int) -> bool:
+        """Remove a guest user. Returns True if removed, False if not found."""
+        if user_id not in self.allowed_users:
+            return False
+        self.allowed_users.remove(user_id)
+        return True
 
     def get_folder_by_topic(self, topic_id: int) -> FolderConfig | None:
         """Find a folder by its Telegram topic ID."""
@@ -155,6 +184,8 @@ def _parse_workspace_config(data: dict[str, Any], root: Path) -> WorkspaceConfig
         folders=folders,
         ralph=ralph,
         default_engine=workspace_data.get("default_engine", "claude"),
+        admin_user=workspace_data.get("admin_user"),
+        allowed_users=workspace_data.get("allowed_users", []),
     )
 
 
@@ -173,6 +204,10 @@ def save_workspace_config(config: WorkspaceConfig) -> None:
     lines.append(f'bot_token = "{config.bot_token}"')
     if config.default_engine != "claude":
         lines.append(f'default_engine = "{config.default_engine}"')
+    if config.admin_user is not None:
+        lines.append(f"admin_user = {config.admin_user}")
+    if config.allowed_users:
+        lines.append(f"allowed_users = {config.allowed_users}")
     lines.append("")
 
     # Folders sections
