@@ -208,6 +208,7 @@ Follow these steps when preparing a release:
 
 ### 1. Version Update
 - Update version in `pyproject.toml`
+- Update version in `src/pochi/__init__.py`
 
 ### 2. Code Quality
 - Run `uv run ruff check .` - fix any linting issues
