@@ -87,3 +87,52 @@ def test_claude_backend_has_install_cmd() -> None:
     backend = get_backend("claude")
     assert backend.install_cmd is not None
     assert "npm install" in backend.install_cmd
+
+
+def test_list_backends_discovers_codex() -> None:
+    """Test that auto-discovery finds the Codex backend."""
+    backend_ids = list_backend_ids()
+    assert "codex" in backend_ids
+
+
+def test_get_codex_backend() -> None:
+    """Test that get_backend returns the Codex backend."""
+    backend = get_backend("codex")
+    assert isinstance(backend, EngineBackend)
+    assert backend.id == "codex"
+    assert callable(backend.build_runner)
+    assert backend.install_cmd is not None
+    assert "@openai/codex" in backend.install_cmd
+
+
+def test_list_backends_discovers_opencode() -> None:
+    """Test that auto-discovery finds the OpenCode backend."""
+    backend_ids = list_backend_ids()
+    assert "opencode" in backend_ids
+
+
+def test_get_opencode_backend() -> None:
+    """Test that get_backend returns the OpenCode backend."""
+    backend = get_backend("opencode")
+    assert isinstance(backend, EngineBackend)
+    assert backend.id == "opencode"
+    assert callable(backend.build_runner)
+    assert backend.install_cmd is not None
+    assert "opencode-ai" in backend.install_cmd
+
+
+def test_list_backends_discovers_pi() -> None:
+    """Test that auto-discovery finds the Pi backend."""
+    backend_ids = list_backend_ids()
+    assert "pi" in backend_ids
+
+
+def test_get_pi_backend() -> None:
+    """Test that get_backend returns the Pi backend."""
+    backend = get_backend("pi")
+    assert isinstance(backend, EngineBackend)
+    assert backend.id == "pi"
+    assert callable(backend.build_runner)
+    assert backend.install_cmd is not None
+    assert "pi-coding-agent" in backend.install_cmd
+    assert backend.cli_cmd == "pi"
