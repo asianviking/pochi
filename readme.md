@@ -175,3 +175,11 @@ every response includes a resume line:
 ## development
 
 see [`docs/specification.md`](docs/specification.md) and [`docs/developing.md`](docs/developing.md).
+
+## acknowledgments
+
+Built on top of [takopi](https://github.com/banteg/takopi).
+
+## license
+
+MIT
