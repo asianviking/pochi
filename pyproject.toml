@@ -1,0 +1,49 @@
+[project]
+name = "pochi"
+authors = [{name = "asianviking"}]
+version = "0.1.0"
+description = "Multi-model AI agent Telegram bot for multi-folder workspaces."
+readme = "readme.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.14"
+dependencies = [
+  "anyio>=4.12.0",
+  "httpx>=0.28.1",
+  "markdown-it-py",
+  "msgspec>=0.20.0",
+  "structlog>=25.5.0",
+  "sulguk>=0.11.1",
+  "typer>=0.21.0",
+]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3 :: Only",
+  "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/asianviking/pochi"
+Repository = "https://github.com/asianviking/pochi"
+Issues = "https://github.com/asianviking/pochi/issues"
+
+[project.scripts]
+pochi = "pochi.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.9.18,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-anyio>=0.0.0",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.14.10",
+    "ty>=0.0.8",
+]
+
+[tool.pytest.ini_options]
+addopts = ["--cov=pochi", "--cov-report=term-missing", "--cov-fail-under=70"]
+testpaths = ["tests"]
