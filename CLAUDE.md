@@ -168,6 +168,33 @@ BACKEND = EngineBackend(
 )
 ```
 
+## Feature Planning Workflow
+
+When planning a new feature, follow this workflow:
+
+### 1. Create a GitHub Issue
+- Before writing any code, create a GitHub issue for the feature
+- Use `gh issue create` with a clear title and initial description
+- Label appropriately (e.g., `enhancement`, `feature`)
+
+### 2. Develop the Plan in the Issue
+- Write out the proposed implementation plan in the issue body
+- Include: goals, approach, affected files, and potential concerns
+- Use AskUserQuestion to clarify requirements and resolve ambiguities
+- Update the issue as questions are answered and the plan evolves
+
+### 3. Iterate Until Clear
+- Continue asking questions until there are no remaining unknowns
+- Each clarification should be reflected in the updated issue
+- The issue should serve as a complete specification when done
+
+### 4. Get Approval Before Implementation
+- Only start coding once the plan in the issue is solid
+- The issue becomes the reference document during implementation
+- Link commits and PRs back to the issue
+
+This ensures features are well-thought-out, documented, and aligned with user expectations before any code is written.
+
 ## Multi-Engine Support
 
 Pochi supports multiple AI agent backends via auto-discovery:
