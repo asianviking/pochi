@@ -172,10 +172,6 @@ every response includes a resume line:
 - run only one pochi instance per bot token
 - run `claude` once interactively in each folder to trust the directory
 
-## development
-
-see [`docs/specification.md`](docs/specification.md) and [`docs/developing.md`](docs/developing.md).
-
 ## acknowledgments
 
 Built on top of [takopi](https://github.com/banteg/takopi).
