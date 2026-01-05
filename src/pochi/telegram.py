@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import itertools
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Hashable, Protocol
+from typing import Any, Awaitable, Callable, Hashable, Literal, Protocol
 
 import anyio
 from anyio.abc import TaskGroup
 import httpx
 
+from .chat import ChatProvider, ChatUpdate, Destination, MessageRef, Platform
 from .logging import get_logger
 
 logger = get_logger(__name__)
@@ -895,3 +897,227 @@ class TelegramClient:
                 chat_id=chat_id,
             )
         )
+
+
+class TelegramProvider:
+    """ChatProvider implementation for Telegram.
+
+    Wraps TelegramClient to implement the ChatProvider protocol,
+    enabling platform-agnostic message handling.
+    """
+
+    def __init__(
+        self,
+        client: TelegramClient,
+        *,
+        group_id: int,
+        allowed_updates: list[str] | None = None,
+    ) -> None:
+        """Initialize the Telegram provider.
+
+        Args:
+            client: The underlying TelegramClient
+            group_id: The Telegram group ID to filter updates to
+            allowed_updates: Types of updates to receive (default: message, callback_query)
+        """
+        self._client = client
+        self._group_id = group_id
+        self._allowed_updates = allowed_updates or ["message", "callback_query"]
+        self._offset: int | None = None
+
+    @property
+    def platform(self) -> Platform:
+        """Return the platform identifier."""
+        return "telegram"
+
+    @property
+    def client(self) -> TelegramClient:
+        """Access the underlying TelegramClient for platform-specific operations."""
+        return self._client
+
+    @property
+    def group_id(self) -> int:
+        """The Telegram group ID this provider is configured for."""
+        return self._group_id
+
+    async def send_message(
+        self,
+        dest: Destination,
+        text: str,
+        *,
+        entities: list[dict[str, Any]] | None = None,
+        parse_mode: str | None = None,
+        reply_markup: dict[str, Any] | None = None,
+        disable_notification: bool = False,
+    ) -> MessageRef | None:
+        """Send a message to a Telegram destination."""
+        result = await self._client.send_message(
+            chat_id=dest.channel_id,
+            text=text,
+            message_thread_id=dest.thread_id,
+            reply_to_message_id=dest.reply_to,
+            entities=entities,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+            disable_notification=disable_notification,
+        )
+        if result is None:
+            return None
+        return MessageRef(
+            platform="telegram",
+            channel_id=dest.channel_id,
+            message_id=int(result["message_id"]),
+            thread_id=dest.thread_id,
+        )
+
+    async def edit_message(
+        self,
+        ref: MessageRef,
+        text: str,
+        *,
+        entities: list[dict[str, Any]] | None = None,
+        parse_mode: str | None = None,
+        reply_markup: dict[str, Any] | None = None,
+        wait: bool = True,
+    ) -> bool:
+        """Edit an existing Telegram message."""
+        result = await self._client.edit_message_text(
+            chat_id=ref.channel_id,
+            message_id=ref.message_id,
+            text=text,
+            entities=entities,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+            wait=wait,
+        )
+        return result is not None
+
+    async def delete_message(self, ref: MessageRef) -> bool:
+        """Delete a Telegram message."""
+        return await self._client.delete_message(
+            chat_id=ref.channel_id,
+            message_id=ref.message_id,
+        )
+
+    async def edit_message_reply_markup(
+        self,
+        ref: MessageRef,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> bool:
+        """Edit only the reply markup of a Telegram message."""
+        result = await self._client.edit_message_reply_markup(
+            chat_id=ref.channel_id,
+            message_id=ref.message_id,
+            reply_markup=reply_markup,
+        )
+        return result is not None
+
+    async def answer_callback_query(
+        self,
+        callback_query_id: str,
+        text: str | None = None,
+    ) -> bool:
+        """Answer a callback query (inline button press)."""
+        return await self._client.answer_callback_query(
+            callback_query_id=callback_query_id,
+            text=text,
+        )
+
+    async def create_thread(
+        self,
+        channel_id: int,
+        message_id: int,
+        name: str,
+    ) -> int | None:
+        """Create a thread (not supported on Telegram - uses forum topics instead)."""
+        # Telegram uses forum topics, not per-message threads
+        # This is a no-op; forum topics are created via create_forum_topic
+        return None
+
+    async def get_updates(self) -> AsyncIterator[ChatUpdate]:
+        """Get updates from Telegram via long polling.
+
+        Yields:
+            ChatUpdate objects for each incoming message or callback query
+        """
+        while True:
+            updates = await self._client.get_updates(
+                offset=self._offset,
+                timeout_s=50,
+                allowed_updates=self._allowed_updates,
+            )
+            if updates is None:
+                await anyio.sleep(2)
+                continue
+
+            for upd in updates:
+                self._offset = upd["update_id"] + 1
+
+                # Handle callback queries
+                callback_query = upd.get("callback_query")
+                if callback_query is not None:
+                    yield self._parse_callback_query(callback_query)
+                    continue
+
+                # Handle messages
+                msg = upd.get("message")
+                if msg is None:
+                    continue
+                if "text" not in msg:
+                    continue
+                # Filter to our group
+                if msg["chat"]["id"] != self._group_id:
+                    continue
+                yield self._parse_message(msg)
+
+    def _parse_message(self, msg: dict[str, Any]) -> ChatUpdate:
+        """Parse a Telegram message into a ChatUpdate."""
+        reply = msg.get("reply_to_message") or {}
+        return ChatUpdate(
+            platform="telegram",
+            update_type="message",
+            channel_id=msg["chat"]["id"],
+            thread_id=msg.get("message_thread_id"),
+            message_id=msg["message_id"],
+            text=msg.get("text", ""),
+            user_id=msg.get("from", {}).get("id", 0),
+            reply_to_message_id=reply.get("message_id"),
+            reply_to_text=reply.get("text"),
+            raw=msg,
+        )
+
+    def _parse_callback_query(self, query: dict[str, Any]) -> ChatUpdate:
+        """Parse a Telegram callback query into a ChatUpdate."""
+        msg = query.get("message") or {}
+        return ChatUpdate(
+            platform="telegram",
+            update_type="callback_query",
+            channel_id=msg.get("chat", {}).get("id", 0),
+            thread_id=msg.get("message_thread_id"),
+            message_id=msg.get("message_id", 0),
+            user_id=query.get("from", {}).get("id", 0),
+            callback_query_id=query.get("id"),
+            callback_data=query.get("data"),
+            callback_message_id=msg.get("message_id"),
+            callback_chat_id=msg.get("chat", {}).get("id"),
+            raw=query,
+        )
+
+    async def drain_backlog(self) -> None:
+        """Drain any pending updates (for startup)."""
+        updates = await self._client.get_updates(
+            offset=self._offset,
+            timeout_s=0,
+            allowed_updates=self._allowed_updates,
+        )
+        if updates:
+            for upd in updates:
+                self._offset = upd["update_id"] + 1
+            logger.info(
+                "telegram.backlog_drained",
+                count=len(updates),
+            )
+
+    async def close(self) -> None:
+        """Close the provider."""
+        await self._client.close()

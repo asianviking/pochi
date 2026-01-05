@@ -312,8 +312,13 @@ class TestSaveWorkspaceConfig:
         loaded = load_workspace_config(tmp_path)
         assert loaded is not None
         assert loaded.name == "saved-workspace"
-        assert loaded.telegram_group_id == 999
-        assert loaded.bot_token == "secret-token"
+        # Check via new config format (telegram config is auto-migrated)
+        assert loaded.telegram is not None
+        assert loaded.telegram.group_id == 999
+        assert loaded.telegram.bot_token == "secret-token"
+        # Also test helper methods for backwards compatibility
+        assert loaded.get_telegram_group_id() == 999
+        assert loaded.get_telegram_bot_token() == "secret-token"
         assert loaded.default_engine == "codex"
         assert "test-folder" in loaded.folders
         assert loaded.folders["test-folder"].topic_id == 123

@@ -67,6 +67,31 @@ def prepare_telegram(parts: MarkdownParts) -> tuple[str, list[dict[str, Any]]]:
     return render_markdown(assemble_markdown_parts(trimmed))
 
 
+def prepare_discord(parts: MarkdownParts) -> tuple[str, None]:
+    """Prepare markdown parts for Discord.
+
+    Discord supports markdown natively, so we just assemble the parts
+    and truncate if needed. No entity conversion needed.
+
+    Args:
+        parts: The markdown parts to prepare
+
+    Returns:
+        Tuple of (text, None) - Discord doesn't use entities
+    """
+    # Discord has a 2000 char limit
+    max_len = 2000
+    trimmed = MarkdownParts(
+        header=parts.header or "",
+        body=trim_body(parts.body),
+        footer=parts.footer,
+    )
+    text = assemble_markdown_parts(trimmed)
+    if len(text) > max_len:
+        text = text[: max_len - 3] + "..."
+    return text, None
+
+
 def format_changed_file_path(path: str, *, base_dir: Path | None = None) -> str:
     return f"`{relativize_path(path, base_dir=base_dir)}`"
 

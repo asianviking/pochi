@@ -229,20 +229,87 @@ Resume tokens are engine-specific. Each engine has its own format:
 
 The AutoRouter automatically routes messages to the correct engine based on resume tokens.
 
+## Multi-Platform Support
+
+Pochi supports both Telegram and Discord as chat platforms, with a unified config format.
+
+### Platform Configuration
+
+```toml
+# .pochi/workspace.toml
+[workspace]
+name = "my-workspace"
+default_engine = "claude"
+
+# Telegram configuration
+[telegram]
+bot_token = "123456:ABC..."
+group_id = -123456789
+admin_user = 123456789
+allowed_users = [987654321]
+
+# Discord configuration (optional)
+[discord]
+bot_token = "your-discord-bot-token"
+guild_id = 123456789012345678
+category_id = 234567890123456789
+admin_user = 345678901234567890
+allowed_users = [456789012345678901]
+```
+
+### Platform-Specific Behavior
+
+**Telegram:**
+- Uses forum topics for workspace folders
+- Messages create/continue thread in topic
+- Commands: `/clone`, `/create`, `/add`, `/list`, `/users`, etc.
+
+**Discord:**
+- Uses channels within a category for workspace folders
+- Messages in channels auto-create threads for conversations
+- Native slash commands with autocomplete: `/list`, `/status`, `/engine`, `/users`, etc.
+- Thread-to-session mapping for resume tokens
+
+### Key Modules
+
+```
+src/pochi/
+├── chat.py                      # Platform-agnostic abstractions
+├── telegram.py                  # Telegram client + TelegramProvider
+├── discord.py                   # Discord client (discord.py wrapper)
+├── workspace/
+│   ├── bridge.py                # Telegram workspace bridge
+│   ├── discord_bridge.py        # Discord workspace bridge
+│   ├── discord_commands.py      # Discord slash command registration
+│   └── discord_router.py        # Discord channel-to-folder routing
+```
+
+### Chat Abstraction
+
+The `chat.py` module provides platform-agnostic types:
+- `ChatProvider` protocol for platform implementations
+- `ChatUpdate` for normalized incoming messages
+- `Destination` for where to send messages
+- `MessageRef` for referencing sent messages
+
 ## User Authentication
 
 Pochi includes user-level authentication to restrict bot access to authorized users only.
 
 ### Configuration
 
+Each platform has its own user authentication:
+
 ```toml
-# .pochi/workspace.toml
-[workspace]
-name = "my-workspace"
-telegram_group_id = -123456789
-bot_token = "..."
+# Telegram users
+[telegram]
 admin_user = 123456789           # Telegram user ID of admin
 allowed_users = [987654321]      # Guest user IDs
+
+# Discord users (separate from Telegram)
+[discord]
+admin_user = 345678901234567890  # Discord user ID of admin
+allowed_users = [456789012345678901]
 ```
 
 ### User Roles
@@ -263,14 +330,15 @@ allowed_users = [987654321]      # Guest user IDs
 ### User Commands
 
 - `/users` - List admin and all guests (admin + guests can use)
-- `/adduser <id>` - Add a guest user (admin only)
-- `/removeuser <id>` - Remove a guest user (admin only)
+- `/adduser <id>` or `/adduser @user` - Add a guest user (admin only)
+- `/removeuser <id>` or `/removeuser @user` - Remove a guest user (admin only)
 
 ### Security Notes
 
 - Unauthorized users are silently ignored (no reply)
-- Users are identified by Telegram user ID (not @username)
+- Users are identified by platform user ID (not @username)
 - Admin cannot be changed via commands (requires config edit)
+- Each platform has independent user lists
 
 ## Release Checklist
 

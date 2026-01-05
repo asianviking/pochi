@@ -432,7 +432,9 @@ class TestUserManagementCommands:
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
         assert "Added user" in text
-        assert 987654 in workspace_config.allowed_users
+        # User is added to telegram.allowed_users (new config format)
+        assert workspace_config.telegram is not None
+        assert 987654 in workspace_config.telegram.allowed_users
 
     @pytest.mark.anyio
     async def test_adduser_command_already_guest(
@@ -440,7 +442,9 @@ class TestUserManagementCommands:
     ) -> None:
         """Test /adduser command when user is already a guest."""
         workspace_config.admin_user = DEFAULT_USER_ID
-        workspace_config.allowed_users = [987654]
+        # Use new config format
+        assert workspace_config.telegram is not None
+        workspace_config.telegram.allowed_users = [987654]
         route = make_route("adduser", "987654")
         await handle_slash_command(
             mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
@@ -471,7 +475,9 @@ class TestUserManagementCommands:
     ) -> None:
         """Test /removeuser command removes a guest user."""
         workspace_config.admin_user = DEFAULT_USER_ID
-        workspace_config.allowed_users = [987654]
+        # Use new config format
+        assert workspace_config.telegram is not None
+        workspace_config.telegram.allowed_users = [987654]
         route = make_route("removeuser", "987654")
         await handle_slash_command(
             mock_manager, route, reply_to_message_id=1, user_id=DEFAULT_USER_ID
@@ -480,7 +486,7 @@ class TestUserManagementCommands:
         call_args = mock_manager.send_to_topic.call_args
         text = call_args[0][1]
         assert "Removed user" in text
-        assert 987654 not in workspace_config.allowed_users
+        assert 987654 not in workspace_config.telegram.allowed_users
 
     @pytest.mark.anyio
     async def test_removeuser_command_not_guest(
