@@ -14,25 +14,24 @@ import anyio
 
 from ..bridge import (
     BridgeConfig,
-    ProgressEdits,
-    RunningTask,
-    RunOutcome,
     _drain_backlog,
-    _format_error,
     _is_cancel_command,
     _set_command_menu,
     _strip_engine_command,
-    _strip_resume_lines,
-    run_runner_with_cancel,
-    sync_resume_token,
     PROGRESS_EDIT_EVERY_S,
 )
 from ..logging import bind_run_context, clear_context, get_logger
 from ..model import ResumeToken
-from ..render import ExecProgressRenderer, MarkdownParts, prepare_telegram
 from ..router import AutoRouter, RunnerUnavailableError
 from ..runner import Runner
-from ..telegram import BotClient
+from ..runner_bridge import (
+    ExecBridgeConfig,
+    IncomingMessage,
+    RunningTasks,
+    handle_message,
+)
+from ..telegram import BotClient, TelegramPresenter, TelegramTransport
+from ..transport import MessageRef
 from .commands import handle_slash_command
 from .config import (
     WorkspaceConfig,
@@ -206,14 +205,16 @@ async def handle_workspace_message(
     message_thread_id: int | None,
     resume_token: ResumeToken | None,
     cwd: Path | None,
-    running_tasks: dict[int, RunningTask] | None = None,
+    running_tasks: RunningTasks | None = None,
     on_thread_known: Callable[[ResumeToken, anyio.Event], Awaitable[None]]
     | None = None,
     clock: Callable[[], float] = time.monotonic,
-    sleep: Callable[[float], Awaitable[None]] = anyio.sleep,
-    progress_edit_every: float = PROGRESS_EDIT_EVERY_S,
 ) -> None:
-    """Handle a message in a workspace topic."""
+    """Handle a message in a workspace topic.
+
+    Uses the new Transport/Presenter architecture for platform-agnostic
+    message handling.
+    """
     logger.info(
         "handle.incoming",
         chat_id=chat_id,
@@ -242,187 +243,31 @@ async def handle_workspace_message(
             return
 
     try:
-        started_at = clock()
-        is_resume_line = runner.is_resume_line
-        runner_text = _strip_resume_lines(text, is_resume_line=is_resume_line)
+        # Create Transport and Presenter for this topic
+        transport = TelegramTransport(cfg.bot, message_thread_id=message_thread_id)
+        presenter = TelegramPresenter()
 
-        progress_renderer = ExecProgressRenderer(
-            max_actions=5, resume_formatter=runner.format_resume, engine=runner.engine
+        exec_cfg = ExecBridgeConfig(
+            transport=transport,
+            presenter=presenter,
+            final_notify=cfg.final_notify,
         )
 
-        # Send initial progress message to the topic
-        initial_parts = progress_renderer.render_progress_parts(0.0, label="starting")
-        initial_rendered, initial_entities = prepare_telegram(initial_parts)
-        progress_msg = await cfg.bot.send_message(
-            chat_id=chat_id,
-            text=initial_rendered,
-            entities=initial_entities,
-            message_thread_id=message_thread_id,
-            reply_to_message_id=user_msg_id,
-            disable_notification=True,
+        incoming = IncomingMessage(
+            channel_id=chat_id,
+            message_id=user_msg_id,
+            text=text,
         )
 
-        progress_id: int | None = None
-        last_edit_at = 0.0
-        last_rendered: str | None = None
-        if progress_msg is not None:
-            progress_id = int(progress_msg["message_id"])
-            last_edit_at = clock()
-            last_rendered = initial_rendered
-
-        edits = ProgressEdits(
-            bot=cfg.bot,
-            chat_id=chat_id,
-            progress_id=progress_id,
-            renderer=progress_renderer,
-            started_at=started_at,
-            progress_edit_every=progress_edit_every,
+        await handle_message(
+            exec_cfg,
+            runner=runner,
+            incoming=incoming,
+            resume_token=resume_token,
+            strip_resume_line=cfg.router.is_resume_line,
+            running_tasks=running_tasks,
+            on_thread_known=on_thread_known,
             clock=clock,
-            sleep=sleep,
-            last_edit_at=last_edit_at,
-            last_rendered=last_rendered,
-        )
-
-        running_task: RunningTask | None = None
-        if running_tasks is not None and progress_id is not None:
-            running_task = RunningTask()
-            running_tasks[progress_id] = running_task
-
-        cancel_exc_type = anyio.get_cancelled_exc_class()
-        edits_scope = anyio.CancelScope()
-
-        async def run_edits() -> None:
-            try:
-                with edits_scope:
-                    await edits.run()
-            except cancel_exc_type:
-                return
-
-        outcome = RunOutcome()
-        error: Exception | None = None
-
-        async with anyio.create_task_group() as tg:
-            if progress_id is not None:
-                tg.start_soon(run_edits)
-
-            try:
-                outcome = await run_runner_with_cancel(
-                    runner,
-                    prompt=runner_text,
-                    resume_token=resume_token,
-                    edits=edits,
-                    running_task=running_task,
-                    on_thread_known=on_thread_known,
-                )
-            except Exception as exc:
-                error = exc
-                logger.exception(
-                    "handle.runner_failed",
-                    error=str(exc),
-                    error_type=exc.__class__.__name__,
-                )
-            finally:
-                if (
-                    running_task is not None
-                    and running_tasks is not None
-                    and progress_id is not None
-                ):
-                    running_task.done.set()
-                    running_tasks.pop(progress_id, None)
-                if not outcome.cancelled and error is None:
-                    await anyio.sleep(0)
-                edits_scope.cancel()
-
-        elapsed = clock() - started_at
-
-        # Handle error
-        if error is not None:
-            sync_resume_token(progress_renderer, outcome.resume)
-            err_body = _format_error(error)
-            final_parts = progress_renderer.render_final_parts(
-                elapsed, err_body, status="error"
-            )
-            await _send_topic_result(
-                cfg,
-                chat_id=chat_id,
-                message_thread_id=message_thread_id,
-                user_msg_id=user_msg_id,
-                progress_id=progress_id,
-                parts=final_parts,
-                disable_notification=True,
-                edit_message_id=progress_id,
-            )
-            return
-
-        # Handle cancellation
-        if outcome.cancelled:
-            resume = sync_resume_token(progress_renderer, outcome.resume)
-            logger.info(
-                "handle.cancelled",
-                resume=resume.value if resume else None,
-                elapsed_s=elapsed,
-            )
-            final_parts = progress_renderer.render_progress_parts(
-                elapsed, label="`cancelled`"
-            )
-            await _send_topic_result(
-                cfg,
-                chat_id=chat_id,
-                message_thread_id=message_thread_id,
-                user_msg_id=user_msg_id,
-                progress_id=progress_id,
-                parts=final_parts,
-                disable_notification=True,
-                edit_message_id=progress_id,
-            )
-            return
-
-        # Handle completion
-        if outcome.completed is None:
-            raise RuntimeError("runner finished without a completed event")
-
-        completed = outcome.completed
-        run_ok = completed.ok
-        run_error = completed.error
-
-        final_answer = completed.answer
-        if run_ok is False and run_error:
-            if final_answer.strip():
-                final_answer = f"{final_answer}\n\n{run_error}"
-            else:
-                final_answer = str(run_error)
-
-        status = (
-            "error"
-            if run_ok is False
-            else ("done" if final_answer.strip() else "error")
-        )
-        resume_token = completed.resume or outcome.resume
-        logger.info(
-            "runner.completed",
-            ok=run_ok,
-            error=run_error,
-            answer_len=len(final_answer or ""),
-            elapsed_s=round(elapsed, 2),
-            action_count=progress_renderer.action_count,
-            resume=resume_token.value if resume_token else None,
-        )
-
-        sync_resume_token(progress_renderer, completed.resume or outcome.resume)
-        final_parts = progress_renderer.render_final_parts(
-            elapsed, final_answer, status=status
-        )
-
-        edit_message_id = None if cfg.final_notify else progress_id
-        await _send_topic_result(
-            cfg,
-            chat_id=chat_id,
-            message_thread_id=message_thread_id,
-            user_msg_id=user_msg_id,
-            progress_id=progress_id,
-            parts=final_parts,
-            disable_notification=False,
-            edit_message_id=edit_message_id,
         )
 
     finally:
@@ -434,45 +279,6 @@ async def handle_workspace_message(
                 pass
 
 
-async def _send_topic_result(
-    cfg: WorkspaceBridgeConfig,
-    *,
-    chat_id: int,
-    message_thread_id: int | None,
-    user_msg_id: int,
-    progress_id: int | None,
-    parts: MarkdownParts,
-    disable_notification: bool,
-    edit_message_id: int | None,
-) -> None:
-    """Send or edit a result message in a topic."""
-    rendered, entities = prepare_telegram(parts)
-
-    if edit_message_id is not None:
-        edited = await cfg.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=edit_message_id,
-            text=rendered,
-            entities=entities,
-        )
-        if edited is not None:
-            return
-
-    # Send new message
-    sent = await cfg.bot.send_message(
-        chat_id=chat_id,
-        text=rendered,
-        entities=entities,
-        message_thread_id=message_thread_id,
-        reply_to_message_id=user_msg_id,
-        disable_notification=disable_notification,
-    )
-
-    # Delete progress message if we sent a new one
-    if sent is not None and progress_id is not None and edit_message_id is None:
-        await cfg.bot.delete_message(chat_id=chat_id, message_id=progress_id)
-
-
 async def run_workspace_loop(
     cfg: WorkspaceBridgeConfig,
     poller: Callable[
@@ -480,7 +286,7 @@ async def run_workspace_loop(
     ] = poll_workspace_updates,
 ) -> None:
     """Main loop for workspace mode."""
-    running_tasks: dict[int, RunningTask] = {}
+    running_tasks: RunningTasks = {}
     chat_id = cfg.workspace.telegram_group_id
 
     try:
@@ -547,7 +353,6 @@ async def run_workspace_loop(
                         resume_token=resume_token,
                         cwd=cwd,
                         running_tasks=running_tasks,
-                        progress_edit_every=cfg.progress_edit_every,
                     )
                 except Exception as exc:
                     logger.exception(
@@ -580,7 +385,11 @@ async def run_workspace_loop(
                     if reply:
                         progress_id = reply.get("message_id")
                         if progress_id is not None:
-                            running_task = running_tasks.get(int(progress_id))
+                            progress_ref = MessageRef(
+                                channel_id=chat_id,
+                                message_id=int(progress_id),
+                            )
+                            running_task = running_tasks.get(progress_ref)
                             if running_task is not None:
                                 running_task.cancel_requested.set()
                                 continue
@@ -696,7 +505,8 @@ async def run_workspace_loop(
                 # Check if replying to a running task
                 reply_id = r.get("message_id")
                 if resume_token is None and reply_id is not None:
-                    running_task = running_tasks.get(int(reply_id))
+                    reply_ref = MessageRef(channel_id=chat_id, message_id=int(reply_id))
+                    running_task = running_tasks.get(reply_ref)
                     if running_task is not None:
                         # Wait for resume token from running task
                         if running_task.resume is not None:

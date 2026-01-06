@@ -1,4 +1,8 @@
-"""Pure renderers for Pochi events (no engine-native event handling)."""
+"""Pure renderers for Pochi events (no engine-native event handling).
+
+This module provides markdown formatting and rendering utilities, including
+the new ProgressState-based architecture aligned with takopi.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +18,8 @@ from markdown_it import MarkdownIt
 from sulguk import transform_html
 
 from .model import Action, ActionEvent, PochiEvent, ResumeToken, StartedEvent
+from .progress import ProgressState
+from .transport import RenderedMessage
 from .utils.paths import relativize_path
 
 STATUS = {"running": "▸", "update": "↻", "done": "✓", "fail": "✗"}
@@ -321,3 +327,119 @@ class ExecProgressRenderer:
         if not lines:
             return None
         return HARD_BREAK.join(lines)
+
+
+class MarkdownFormatter:
+    """Format ProgressState into MarkdownParts.
+
+    This class handles the conversion from ProgressState snapshots into
+    structured markdown parts, aligned with takopi's MarkdownFormatter.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_actions: int = 5,
+        command_width: int | None = MAX_PROGRESS_CMD_LEN,
+    ) -> None:
+        self.max_actions = max(0, int(max_actions))
+        self.command_width = command_width
+
+    def render_progress_parts(
+        self,
+        state: ProgressState,
+        *,
+        elapsed_s: float,
+        label: str = "working",
+    ) -> MarkdownParts:
+        """Render progress state into markdown parts."""
+        step = state.action_count or None
+        header = format_header(
+            elapsed_s,
+            step,
+            label=label,
+            engine=state.engine,
+        )
+        body = self._assemble_body(self._format_actions(state))
+        return MarkdownParts(header=header, body=body, footer=state.resume_line)
+
+    def render_final_parts(
+        self,
+        state: ProgressState,
+        *,
+        elapsed_s: float,
+        status: str,
+        answer: str,
+    ) -> MarkdownParts:
+        """Render final state into markdown parts."""
+        step = state.action_count or None
+        header = format_header(
+            elapsed_s,
+            step,
+            label=status,
+            engine=state.engine,
+        )
+        answer = (answer or "").strip()
+        body = answer if answer else None
+        return MarkdownParts(header=header, body=body, footer=state.resume_line)
+
+    def _format_actions(self, state: ProgressState) -> list[str]:
+        """Format action states into display lines."""
+        actions = list(state.actions)
+        if self.max_actions == 0:
+            actions = []
+        else:
+            actions = actions[-self.max_actions :]
+        return [
+            format_action_line(
+                action_state.action,
+                action_state.display_phase,
+                action_state.ok,
+                command_width=self.command_width,
+            )
+            for action_state in actions
+        ]
+
+    @staticmethod
+    def _assemble_body(lines: list[str]) -> str | None:
+        if not lines:
+            return None
+        return HARD_BREAK.join(lines)
+
+
+class MarkdownPresenter:
+    """Presenter implementation that renders to markdown.
+
+    This implements the Presenter protocol, converting ProgressState
+    into RenderedMessage objects suitable for delivery via Transport.
+    """
+
+    def __init__(self, *, formatter: MarkdownFormatter | None = None) -> None:
+        self._formatter = formatter or MarkdownFormatter()
+
+    def render_progress(
+        self,
+        state: ProgressState,
+        *,
+        elapsed_s: float,
+        label: str = "working",
+    ) -> RenderedMessage:
+        """Render a progress update message."""
+        parts = self._formatter.render_progress_parts(
+            state, elapsed_s=elapsed_s, label=label
+        )
+        return RenderedMessage(text=assemble_markdown_parts(parts))
+
+    def render_final(
+        self,
+        state: ProgressState,
+        *,
+        elapsed_s: float,
+        status: str,
+        answer: str,
+    ) -> RenderedMessage:
+        """Render a final result message."""
+        parts = self._formatter.render_final_parts(
+            state, elapsed_s=elapsed_s, status=status, answer=answer
+        )
+        return RenderedMessage(text=assemble_markdown_parts(parts))

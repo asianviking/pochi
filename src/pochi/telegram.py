@@ -10,6 +10,9 @@ from anyio.abc import TaskGroup
 import httpx
 
 from .logging import get_logger
+from .progress import ProgressState
+from .render import MarkdownFormatter, prepare_telegram
+from .transport import ChannelId, MessageRef, RenderedMessage, SendOptions
 
 logger = get_logger(__name__)
 
@@ -894,4 +897,159 @@ class TelegramClient:
                 priority=SEND_PRIORITY,
                 chat_id=chat_id,
             )
+        )
+
+
+def _as_int(value: int | str, *, label: str) -> int:
+    """Ensure a value is an integer (not bool or string)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"Telegram {label} must be int, got {type(value).__name__}")
+    return value
+
+
+class TelegramPresenter:
+    """Presenter implementation for Telegram.
+
+    Renders ProgressState into RenderedMessage with Telegram-specific
+    formatting (entities, message limits).
+    """
+
+    def __init__(self, *, formatter: MarkdownFormatter | None = None) -> None:
+        self._formatter = formatter or MarkdownFormatter()
+
+    def render_progress(
+        self,
+        state: ProgressState,
+        *,
+        elapsed_s: float,
+        label: str = "working",
+    ) -> RenderedMessage:
+        """Render a progress update for Telegram."""
+        parts = self._formatter.render_progress_parts(
+            state, elapsed_s=elapsed_s, label=label
+        )
+        text, entities = prepare_telegram(parts)
+        return RenderedMessage(text=text, extra={"entities": entities})
+
+    def render_final(
+        self,
+        state: ProgressState,
+        *,
+        elapsed_s: float,
+        status: str,
+        answer: str,
+    ) -> RenderedMessage:
+        """Render a final result for Telegram."""
+        parts = self._formatter.render_final_parts(
+            state, elapsed_s=elapsed_s, status=status, answer=answer
+        )
+        text, entities = prepare_telegram(parts)
+        return RenderedMessage(text=text, extra={"entities": entities})
+
+
+class TelegramTransport:
+    """Transport implementation for Telegram.
+
+    Wraps a BotClient to implement the Transport protocol for
+    platform-agnostic message delivery.
+    """
+
+    def __init__(
+        self,
+        bot: BotClient,
+        *,
+        message_thread_id: int | None = None,
+    ) -> None:
+        self._bot = bot
+        self._message_thread_id = message_thread_id
+
+    async def close(self) -> None:
+        """Close the underlying bot client."""
+        await self._bot.close()
+
+    async def send(
+        self,
+        *,
+        channel_id: ChannelId,
+        message: RenderedMessage,
+        options: SendOptions | None = None,
+    ) -> MessageRef | None:
+        """Send a message to Telegram."""
+        chat_id = _as_int(channel_id, label="chat_id")
+        reply_to_message_id: int | None = None
+        replace_message_id: int | None = None
+        disable_notification: bool | None = None
+
+        if options is not None:
+            disable_notification = not options.notify
+            if options.reply_to is not None:
+                reply_to_message_id = _as_int(
+                    options.reply_to.message_id, label="reply_to_message_id"
+                )
+            if options.replace is not None:
+                replace_message_id = _as_int(
+                    options.replace.message_id, label="replace_message_id"
+                )
+
+        entities = message.extra.get("entities")
+        parse_mode = message.extra.get("parse_mode")
+
+        sent = await self._bot.send_message(
+            chat_id=chat_id,
+            text=message.text,
+            reply_to_message_id=reply_to_message_id,
+            disable_notification=disable_notification,
+            entities=entities,
+            parse_mode=parse_mode,
+            message_thread_id=self._message_thread_id,
+            replace_message_id=replace_message_id,
+        )
+
+        if sent is None:
+            return None
+        message_id = sent.get("message_id")
+        if message_id is None:
+            return None
+        return MessageRef(
+            channel_id=chat_id,
+            message_id=_as_int(message_id, label="message_id"),
+            raw=sent,
+        )
+
+    async def edit(
+        self,
+        *,
+        ref: MessageRef,
+        message: RenderedMessage,
+        wait: bool = True,
+    ) -> MessageRef | None:
+        """Edit a message on Telegram."""
+        chat_id = _as_int(ref.channel_id, label="chat_id")
+        message_id = _as_int(ref.message_id, label="message_id")
+        entities = message.extra.get("entities")
+        parse_mode = message.extra.get("parse_mode")
+
+        edited = await self._bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=message.text,
+            entities=entities,
+            parse_mode=parse_mode,
+            wait=wait,
+        )
+
+        if edited is None:
+            return ref if not wait else None
+        new_message_id = edited.get("message_id", message_id)
+        return MessageRef(
+            channel_id=chat_id,
+            message_id=_as_int(new_message_id, label="message_id"),
+            raw=edited,
+        )
+
+    async def delete(self, *, ref: MessageRef) -> bool:
+        """Delete a message from Telegram."""
+        return await self._bot.delete_message(
+            chat_id=_as_int(ref.channel_id, label="chat_id"),
+            message_id=_as_int(ref.message_id, label="message_id"),
         )

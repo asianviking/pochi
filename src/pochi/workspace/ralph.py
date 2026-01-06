@@ -7,7 +7,9 @@ its own work and continues until satisfied or max iterations reached.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,8 +19,17 @@ import anyio
 
 from ..logging import get_logger
 from ..model import ResumeToken
-from ..render import ExecProgressRenderer, prepare_telegram
+from ..progress import ProgressTracker, sync_resume_token
 from ..router import AutoRouter
+from ..runner_bridge import (
+    ProgressEdits,
+    RunningTask,
+    RunOutcome,
+    run_runner_with_cancel,
+    _format_error,
+)
+from ..telegram import TelegramPresenter, TelegramTransport
+from ..transport import MessageRef
 
 if TYPE_CHECKING:
     from .config import WorkspaceConfig, FolderConfig
@@ -295,18 +306,8 @@ class RalphManager:
         """Run a single iteration of the Ralph loop.
 
         Returns the answer text, or None if cancelled/error.
+        Uses the new Transport/Presenter architecture.
         """
-        import os
-        from ..bridge import (
-            ProgressEdits,
-            RunOutcome,
-            run_runner_with_cancel,
-            sync_resume_token,
-            _format_error,
-            PROGRESS_EDIT_EVERY_S,
-        )
-        import time
-
         chat_id = self.workspace.telegram_group_id
         original_cwd = os.getcwd()
 
@@ -322,48 +323,48 @@ class RalphManager:
 
         try:
             started_at = time.monotonic()
-            progress_renderer = ExecProgressRenderer(
-                max_actions=5,
-                resume_formatter=runner.format_resume,
-                engine=runner.engine,
-            )
+
+            # Create Transport and Presenter
+            transport = TelegramTransport(self.bot, message_thread_id=loop.topic_id)
+            presenter = TelegramPresenter()
+
+            # Create ProgressTracker
+            progress_tracker = ProgressTracker(engine=runner.engine)
 
             # Send initial progress with cancel button
-            initial_parts = progress_renderer.render_progress_parts(
-                0.0, label="working"
+            state = progress_tracker.snapshot(resume_formatter=runner.format_resume)
+            initial_rendered = presenter.render_progress(
+                state, elapsed_s=0.0, label="working"
             )
-            initial_rendered, initial_entities = prepare_telegram(initial_parts)
             cancel_keyboard = _cancel_keyboard(loop.topic_id, loop.loop_id)
             progress_msg = await self.bot.send_message(
                 chat_id=chat_id,
-                text=initial_rendered,
-                entities=initial_entities,
+                text=initial_rendered.text,
+                entities=initial_rendered.extra.get("entities"),
                 message_thread_id=loop.topic_id,
                 reply_to_message_id=iteration_msg_id,
                 disable_notification=True,
                 reply_markup=cancel_keyboard,
             )
 
-            progress_id: int | None = None
+            progress_ref: MessageRef | None = None
             if progress_msg is not None:
-                progress_id = int(progress_msg["message_id"])
+                progress_ref = MessageRef(
+                    channel_id=chat_id,
+                    message_id=int(progress_msg["message_id"]),
+                )
 
             edits = ProgressEdits(
-                bot=self.bot,
-                chat_id=chat_id,
-                progress_id=progress_id,
-                renderer=progress_renderer,
+                transport=transport,
+                presenter=presenter,
+                channel_id=chat_id,
+                progress_ref=progress_ref,
+                tracker=progress_tracker,
                 started_at=started_at,
-                progress_edit_every=PROGRESS_EDIT_EVERY_S,
                 clock=time.monotonic,
-                sleep=anyio.sleep,
-                last_edit_at=started_at,
                 last_rendered=initial_rendered,
-                reply_markup=cancel_keyboard,
+                resume_formatter=runner.format_resume,
             )
-
-            # Create a fake running task for cancellation
-            from ..bridge import RunningTask
 
             running_task = RunningTask()
 
@@ -414,33 +415,33 @@ class RalphManager:
             elapsed = time.monotonic() - started_at
 
             if error is not None:
-                sync_resume_token(progress_renderer, outcome.resume)
+                sync_resume_token(progress_tracker, outcome.resume)
                 err_body = _format_error(error)
-                final_parts = progress_renderer.render_final_parts(
-                    elapsed, err_body, status="error"
+                state = progress_tracker.snapshot(resume_formatter=runner.format_resume)
+                final_rendered = presenter.render_final(
+                    state, elapsed_s=elapsed, status="error", answer=err_body
                 )
-                final_rendered, final_entities = prepare_telegram(final_parts)
-                if progress_id is not None:
+                if progress_ref is not None:
                     await self.bot.edit_message_text(
                         chat_id=chat_id,
-                        message_id=progress_id,
-                        text=final_rendered,
-                        entities=final_entities,
+                        message_id=int(progress_ref.message_id),
+                        text=final_rendered.text,
+                        entities=final_rendered.extra.get("entities"),
                     )
                 return None
 
             if outcome.cancelled:
-                sync_resume_token(progress_renderer, outcome.resume)
-                final_parts = progress_renderer.render_final_parts(
-                    elapsed, "Loop cancelled", status="cancelled"
+                sync_resume_token(progress_tracker, outcome.resume)
+                state = progress_tracker.snapshot(resume_formatter=runner.format_resume)
+                final_rendered = presenter.render_progress(
+                    state, elapsed_s=elapsed, label="`cancelled`"
                 )
-                final_rendered, final_entities = prepare_telegram(final_parts)
-                if progress_id is not None:
+                if progress_ref is not None:
                     await self.bot.edit_message_text(
                         chat_id=chat_id,
-                        message_id=progress_id,
-                        text=final_rendered,
-                        entities=final_entities,
+                        message_id=int(progress_ref.message_id),
+                        text=final_rendered.text,
+                        entities=final_rendered.extra.get("entities"),
                     )
                 return None
 
@@ -456,27 +457,28 @@ class RalphManager:
                 else:
                     final_answer = str(completed.error)
 
-            sync_resume_token(progress_renderer, completed.resume or outcome.resume)
-            final_parts = progress_renderer.render_final_parts(
-                elapsed,
-                final_answer,
+            sync_resume_token(progress_tracker, completed.resume or outcome.resume)
+            state = progress_tracker.snapshot(resume_formatter=runner.format_resume)
+            final_rendered = presenter.render_final(
+                state,
+                elapsed_s=elapsed,
                 status="done" if completed.ok else "error",
+                answer=final_answer,
             )
-            final_rendered, final_entities = prepare_telegram(final_parts)
 
-            if progress_id is not None:
+            if progress_ref is not None:
                 # Add Cancel button to the final message
                 await self.bot.edit_message_text(
                     chat_id=chat_id,
-                    message_id=progress_id,
-                    text=final_rendered,
-                    entities=final_entities,
+                    message_id=int(progress_ref.message_id),
+                    text=final_rendered.text,
+                    entities=final_rendered.extra.get("entities"),
                     reply_markup=_cancel_keyboard(loop.topic_id, loop.loop_id),
                 )
                 # Track this message so we can remove the button later
-                loop.button_message_id = progress_id
-                loop.button_message_text = final_rendered
-                loop.button_message_entities = final_entities
+                loop.button_message_id = int(progress_ref.message_id)
+                loop.button_message_text = final_rendered.text
+                loop.button_message_entities = final_rendered.extra.get("entities")
 
             return final_answer
 

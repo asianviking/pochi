@@ -10,6 +10,8 @@ import anyio
 
 from .model import CompletedEvent, EngineId, PochiEvent, ResumeToken, StartedEvent
 from .logging import bind_run_context, get_logger
+from .progress import ProgressTracker
+from .progress import sync_resume_token as sync_resume_token_tracker
 from .render import (
     ExecProgressRenderer,
     prepare_telegram,
@@ -351,6 +353,31 @@ async def run_runner_with_cancel(
 def sync_resume_token(
     renderer: ExecProgressRenderer, resume: ResumeToken | None
 ) -> ResumeToken | None:
+    """Sync resume token with ExecProgressRenderer.
+
+    This function is for backwards compatibility with code using ExecProgressRenderer.
+    New code should use progress.sync_resume_token with ProgressTracker.
+    """
     resume = resume or renderer.resume_token
     renderer.resume_token = resume
     return resume
+
+
+# Re-export for backwards compatibility
+__all__ = [
+    "BridgeConfig",
+    "ProgressEdits",
+    "ProgressTracker",
+    "RunningTask",
+    "RunOutcome",
+    "PROGRESS_EDIT_EVERY_S",
+    "run_runner_with_cancel",
+    "sync_resume_token",
+    "sync_resume_token_tracker",
+    "_drain_backlog",
+    "_format_error",
+    "_is_cancel_command",
+    "_set_command_menu",
+    "_strip_engine_command",
+    "_strip_resume_lines",
+]
