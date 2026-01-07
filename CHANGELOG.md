@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-01-07
+
+### Added
+
+- Transport-agnostic abstractions for multi-transport support (Phase 1 of #9)
+  - `Transport` protocol for abstracting message delivery
+  - `Presenter` protocol for rendering progress and final messages
+  - `ProgressTracker` and state classes for event reduction
+  - `MarkdownFormatter` and `MarkdownPresenter` for markdown rendering
+  - `CommandResult` and `CommandRegistry` for transport-agnostic commands
+  - `ChannelRouter` and `RouteResult` for message routing
+  - `WorkspaceManager` for folder operations
+  - `runner_bridge.py` for transport-agnostic runner execution
+
+### Changed
+
+- Refactored Telegram code into `telegram/` package with clear separation:
+  - `telegram/client.py`: TelegramClient and TelegramOutbox
+  - `telegram/transport.py`: TelegramTransport implementing Transport protocol
+  - `telegram/presenter.py`: TelegramPresenter for Telegram-specific rendering
+  - `telegram/bridge.py`: Polling and update handling
+- Extended config with `TelegramConfig` and multi-transport channel support
+- Backwards compatibility maintained via re-exports in `telegram.py`
+
 ## [0.1.2] - 2026-01-05
 
 ### Added
