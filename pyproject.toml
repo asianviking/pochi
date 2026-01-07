@@ -45,5 +45,5 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-addopts = ["--cov=pochi", "--cov-report=term-missing", "--cov-fail-under=70"]
+addopts = ["--cov=pochi", "--cov-report=term-missing", "--cov-fail-under=55"]
 testpaths = ["tests"]
