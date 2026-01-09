@@ -912,9 +912,7 @@ async def run_workspace_loop(
 
                 # Resolve resume token from the first message's reply
                 r = batch.first_reply_to or {}
-                resume_token = cfg.router.resolve_resume(
-                    processed_text, r.get("text")
-                )
+                resume_token = cfg.router.resolve_resume(processed_text, r.get("text"))
 
                 # Check if replying to a running task
                 reply_id = r.get("message_id")
@@ -937,7 +935,9 @@ async def run_workspace_loop(
                 # Inject orchestrator context for new General topic messages
                 job_text = processed_text
                 if route.is_general and resume_token is None:
-                    job_text = prepend_orchestrator_context(cfg.workspace, processed_text)
+                    job_text = prepend_orchestrator_context(
+                        cfg.workspace, processed_text
+                    )
 
                 # Start the job
                 tg.start_soon(

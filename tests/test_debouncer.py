@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 import anyio
@@ -91,8 +90,12 @@ class TestTopicDebouncerSync:
         """Multiple messages to same topic should be queued together."""
         debouncer = TopicDebouncer(window_ms=200.0)
 
-        batches1 = debouncer.add_message(123, _make_msg(1, "hello", message_thread_id=123))
-        batches2 = debouncer.add_message(123, _make_msg(2, "world", message_thread_id=123))
+        batches1 = debouncer.add_message(
+            123, _make_msg(1, "hello", message_thread_id=123)
+        )
+        batches2 = debouncer.add_message(
+            123, _make_msg(2, "world", message_thread_id=123)
+        )
 
         assert batches1 == []
         assert batches2 == []
@@ -128,9 +131,7 @@ class TestTopicDebouncerSync:
         debouncer = TopicDebouncer(window_ms=200.0)
         reply = {"message_id": 100, "text": "previous message"}
 
-        debouncer.add_message(
-            None, _make_msg(1, "first", reply_to_message=reply)
-        )
+        debouncer.add_message(None, _make_msg(1, "first", reply_to_message=reply))
         debouncer.add_message(None, _make_msg(2, "second"))
 
         flushed = debouncer.flush_all()
