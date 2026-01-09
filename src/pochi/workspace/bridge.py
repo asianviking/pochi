@@ -27,12 +27,14 @@ from ..bridge import (
     sync_resume_token,
     PROGRESS_EDIT_EVERY_S,
 )
+from ..context import RunContext
 from ..logging import bind_run_context, clear_context, get_logger
 from ..model import ResumeToken
 from ..render import ExecProgressRenderer, MarkdownParts, prepare_telegram
 from ..router import AutoRouter, RunnerUnavailableError
 from ..runner import Runner
 from ..telegram import BotClient
+from ..worktrees import WorktreeError, ensure_worktree, sanitize_branch_name
 from .commands import handle_slash_command
 from .config import (
     WorkspaceConfig,
@@ -206,6 +208,7 @@ async def handle_workspace_message(
     message_thread_id: int | None,
     resume_token: ResumeToken | None,
     cwd: Path | None,
+    run_context: RunContext | None = None,
     running_tasks: dict[int, RunningTask] | None = None,
     on_thread_known: Callable[[ResumeToken, anyio.Event], Awaitable[None]]
     | None = None,
@@ -247,7 +250,10 @@ async def handle_workspace_message(
         runner_text = _strip_resume_lines(text, is_resume_line=is_resume_line)
 
         progress_renderer = ExecProgressRenderer(
-            max_actions=5, resume_formatter=runner.format_resume, engine=runner.engine
+            max_actions=5,
+            resume_formatter=runner.format_resume,
+            engine=runner.engine,
+            run_context=run_context,
         )
 
         # Send initial progress message to the topic
@@ -503,6 +509,7 @@ async def run_workspace_loop(
                 resume_token: ResumeToken | None,
                 cwd: Path | None,
                 engine_override: str | None = None,
+                run_context: RunContext | None = None,
             ) -> None:
                 try:
                     try:
@@ -546,6 +553,7 @@ async def run_workspace_loop(
                         message_thread_id=message_thread_id,
                         resume_token=resume_token,
                         cwd=cwd,
+                        run_context=run_context,
                         running_tasks=running_tasks,
                         progress_edit_every=cfg.progress_edit_every,
                     )
@@ -604,8 +612,12 @@ async def run_workspace_loop(
                     )
                     continue
 
+                # Get reply text for context extraction
+                reply = msg.get("reply_to_message") or {}
+                reply_text = reply.get("text")
+
                 # Route the message
-                route = cfg.workspace_router.route(message_thread_id, text)
+                route = cfg.workspace_router.route(message_thread_id, text, reply_text)
 
                 # Handle General topic slash commands (Python-handled)
                 if is_general_slash_command(route):
@@ -680,21 +692,53 @@ async def run_workspace_loop(
                     text, engine_ids=cfg.router.engine_ids
                 )
 
-                # Determine working directory
+                # Determine working directory and run context
                 cwd: Path | None = None
+                run_context: RunContext | None = None
+
                 if route.folder is not None:
-                    # Worker topic - use repo directory
-                    cwd = route.folder.absolute_path(cfg.workspace.root)
+                    folder_path = route.folder.absolute_path(cfg.workspace.root)
+
+                    # Handle @branch directive for worktree
+                    if route.branch:
+                        try:
+                            branch = sanitize_branch_name(route.branch)
+                            cwd = ensure_worktree(
+                                folder_path,
+                                branch,
+                                worktrees_dir=cfg.workspace.worktrees_dir,
+                                base_branch=cfg.workspace.worktree_base,
+                            )
+                            run_context = RunContext(
+                                folder=route.folder.name, branch=branch
+                            )
+                            logger.info(
+                                "worktree.resolved",
+                                folder=route.folder.name,
+                                branch=branch,
+                                path=str(cwd),
+                            )
+                        except (ValueError, WorktreeError) as e:
+                            await cfg.bot.send_message(
+                                chat_id=chat_id,
+                                text=f"❌ Worktree error: {e}",
+                                message_thread_id=message_thread_id,
+                                reply_to_message_id=user_msg_id,
+                            )
+                            continue
+                    else:
+                        # Worker topic - use main repo directory
+                        cwd = folder_path
+                        run_context = RunContext(folder=route.folder.name)
                 elif route.is_general:
                     # Orchestrator in General topic - use workspace root
                     cwd = cfg.workspace.root
 
                 # Resolve resume token from reply
-                r = msg.get("reply_to_message") or {}
-                resume_token = cfg.router.resolve_resume(text, r.get("text"))
+                resume_token = cfg.router.resolve_resume(text, reply_text)
 
                 # Check if replying to a running task
-                reply_id = r.get("message_id")
+                reply_id = reply.get("message_id")
                 if resume_token is None and reply_id is not None:
                     running_task = running_tasks.get(int(reply_id))
                     if running_task is not None:
@@ -725,6 +769,7 @@ async def run_workspace_loop(
                     resume_token,
                     cwd,
                     engine_override,
+                    run_context,
                 )
 
     finally:

@@ -13,6 +13,7 @@ from typing import Any
 from markdown_it import MarkdownIt
 from sulguk import transform_html
 
+from .context import RunContext
 from .model import Action, ActionEvent, PochiEvent, ResumeToken, StartedEvent
 from .utils.paths import relativize_path
 
@@ -223,6 +224,7 @@ class ExecProgressRenderer:
         max_actions: int = 5,
         command_width: int | None = MAX_PROGRESS_CMD_LEN,
         resume_formatter: Callable[[ResumeToken], str] | None = None,
+        run_context: RunContext | None = None,
     ) -> None:
         self.max_actions = max(0, int(max_actions))
         self.command_width = command_width
@@ -232,6 +234,7 @@ class ExecProgressRenderer:
         self.resume_token: ResumeToken | None = None
         self._resume_formatter = resume_formatter
         self.engine = engine
+        self.run_context = run_context
 
     def note_event(self, event: PochiEvent) -> bool:
         match event:
@@ -308,9 +311,19 @@ class ExecProgressRenderer:
         return MarkdownParts(header=header, body=body, footer=self.render_footer())
 
     def render_footer(self) -> str | None:
-        if not self.resume_token or self._resume_formatter is None:
+        parts: list[str] = []
+
+        # Add context footer if we have a branch
+        if self.run_context and self.run_context.branch:
+            parts.append(self.run_context.format_footer())
+
+        # Add resume token footer
+        if self.resume_token and self._resume_formatter is not None:
+            parts.append(self._resume_formatter(self.resume_token))
+
+        if not parts:
             return None
-        return self._resume_formatter(self.resume_token)
+        return "\n".join(parts)
 
     @property
     def recent_actions(self) -> list[str]:

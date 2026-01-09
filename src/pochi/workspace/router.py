@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..context import RunContext
 from ..logging import get_logger
 
 if TYPE_CHECKING:
     from .config import FolderConfig, WorkspaceConfig
 
 logger = get_logger(__name__)
+
+# Pattern to match @branch directive at the start of message
+# Matches: @branch-name, @feature/foo, @fix-123
+# Does not match: @ alone, @@ (escaped), or @ in middle of text
+BRANCH_DIRECTIVE_RE = re.compile(r"^@([a-zA-Z0-9][a-zA-Z0-9/_.-]*)\s*")
 
 
 @dataclass
@@ -26,8 +33,12 @@ class RouteResult:
     command: str | None  # The command name if is_slash_command
     command_args: str  # The arguments after the command
 
+    # Branch directive (@branch syntax)
+    branch: str | None = None  # Branch name if @branch directive present
+    prompt_text: str = ""  # Text after stripping command and branch directive
+
     # Error state
-    is_unbound_topic: bool  # True if topic exists but no folder mapped
+    is_unbound_topic: bool = False  # True if topic exists but no folder mapped
 
 
 def parse_slash_command(text: str) -> tuple[str | None, str]:
@@ -57,6 +68,49 @@ def parse_slash_command(text: str) -> tuple[str | None, str]:
     return command, args.strip()
 
 
+def parse_branch_directive(text: str) -> tuple[str | None, str]:
+    """Parse a @branch directive from text.
+
+    The @branch directive must appear at the start of the text (after any
+    command has been stripped). Supports branch names with alphanumeric
+    characters, slashes, hyphens, underscores, and dots.
+
+    Examples:
+        "@feat/new-feature implement this" -> ("feat/new-feature", "implement this")
+        "@fix-123 debug" -> ("fix-123", "debug")
+        "no directive here" -> (None, "no directive here")
+
+    Returns:
+        (branch_name, remaining_text) tuple.
+        branch_name is None if no directive found.
+    """
+    if not text:
+        return None, text
+
+    match = BRANCH_DIRECTIVE_RE.match(text)
+    if not match:
+        return None, text
+
+    branch = match.group(1)
+    remaining = text[match.end() :].strip()
+
+    return branch, remaining
+
+
+def extract_context_from_text(text: str) -> RunContext | None:
+    """Extract a RunContext from message text containing a ctx: footer.
+
+    This is used to route replies back to the correct folder/branch context.
+
+    Args:
+        text: Message text that may contain a ctx: footer.
+
+    Returns:
+        RunContext if found, None otherwise.
+    """
+    return RunContext.parse(text)
+
+
 class WorkspaceRouter:
     """Routes messages to the appropriate handler based on topic."""
 
@@ -77,18 +131,31 @@ class WorkspaceRouter:
         self.config = config
         self._rebuild_topic_map()
 
-    def route(self, message_thread_id: int | None, text: str) -> RouteResult:
+    def route(
+        self, message_thread_id: int | None, text: str, reply_text: str | None = None
+    ) -> RouteResult:
         """Route a message based on its topic and content.
 
         Args:
             message_thread_id: The Telegram message_thread_id (None for General topic)
             text: The message text
+            reply_text: Text of the message being replied to (for context extraction)
 
         Returns:
             RouteResult with routing information
         """
         command, command_args = parse_slash_command(text)
         is_slash_command = command is not None
+
+        # Parse @branch directive from command args (or text if no command)
+        text_to_parse = command_args if is_slash_command else text
+        branch, prompt_text = parse_branch_directive(text_to_parse)
+
+        # If replying to a message with ctx: footer, extract the branch from there
+        if branch is None and reply_text:
+            ctx = extract_context_from_text(reply_text)
+            if ctx and ctx.branch:
+                branch = ctx.branch
 
         # General topic (message_thread_id is None or 1 for the general topic)
         # Note: Telegram uses message_thread_id=1 for General in some cases
@@ -99,7 +166,8 @@ class WorkspaceRouter:
                 is_slash_command=is_slash_command,
                 command=command,
                 command_args=command_args,
-                is_unbound_topic=False,
+                branch=branch,
+                prompt_text=prompt_text,
             )
 
         # Specific topic - find the folder
@@ -117,6 +185,8 @@ class WorkspaceRouter:
                 is_slash_command=is_slash_command,
                 command=command,
                 command_args=command_args,
+                branch=branch,
+                prompt_text=prompt_text,
                 is_unbound_topic=True,
             )
 
@@ -126,7 +196,8 @@ class WorkspaceRouter:
             is_slash_command=is_slash_command,
             command=command,
             command_args=command_args,
-            is_unbound_topic=False,
+            branch=branch,
+            prompt_text=prompt_text,
         )
 
     def is_ralph_command(self, route: RouteResult) -> bool:

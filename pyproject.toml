@@ -34,6 +34,17 @@ Issues = "https://github.com/asianviking/pochi/issues"
 [project.scripts]
 pochi = "pochi.cli:main"
 
+# Plugin entrypoints for built-in backends
+# Note: mock runner is internal-only (for testing) - no entrypoint
+[project.entry-points."pochi.engine_backends"]
+claude = "pochi.runners.claude:BACKEND"
+codex = "pochi.runners.codex:BACKEND"
+opencode = "pochi.runners.opencode:BACKEND"
+pi = "pochi.runners.pi:BACKEND"
+
+[project.entry-points."pochi.transport_backends"]
+telegram = "pochi.transports.telegram:BACKEND"
+
 [build-system]
 requires = ["uv_build>=0.9.18,<0.10.0"]
 build-backend = "uv_build"

@@ -457,6 +457,61 @@ def setup_command(
         raise typer.Exit(code=1)
 
 
+@app.command("plugins", help="List discovered plugins.")
+def plugins_command(
+    load: bool = typer.Option(
+        False,
+        "--load",
+        help="Load and validate all plugins, showing any errors.",
+    ),
+) -> None:
+    """List discovered plugins without loading them.
+
+    Use --load to load and validate all plugins, which will surface
+    import errors and type mismatches.
+    """
+    from .plugins import (
+        discover_all_plugins,
+        load_plugin,
+    )
+
+    discovery = discover_all_plugins()
+    has_errors = False
+
+    for kind, result in discovery.items():
+        typer.echo(f"\n{kind.upper()} PLUGINS:")
+
+        if not result.entries and not result.errors:
+            typer.echo("  (none discovered)")
+            continue
+
+        for entry in result.entries:
+            dist_info = f" ({entry.distribution})" if entry.distribution else ""
+
+            if load:
+                # Load and validate
+                loaded = load_plugin(entry)
+                if loaded.error:
+                    typer.echo(f"  ✗ {entry.id}{dist_info}")
+                    typer.echo(f"    Error: {loaded.error}")
+                    has_errors = True
+                else:
+                    typer.echo(f"  ✓ {entry.id}{dist_info}")
+            else:
+                # Just list entrypoint
+                typer.echo(f"  • {entry.id}{dist_info}")
+                typer.echo(f"    {entry.entrypoint.value}")
+
+        # Show discovery errors
+        for error in result.errors:
+            typer.echo(f"  ✗ {error}")
+            has_errors = True
+
+    if has_errors:
+        typer.echo("\nSome plugins failed to load. Check the errors above.")
+        raise typer.Exit(code=1)
+
+
 def main() -> None:
     app()
 

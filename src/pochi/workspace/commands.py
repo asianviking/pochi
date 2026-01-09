@@ -6,8 +6,10 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..command_backend import CommandBackend, CommandContext
 from ..engines import list_backend_ids
 from ..logging import get_logger
+from ..plugins import discover_command_plugins, load_plugin
 from .config import save_workspace_config
 
 if TYPE_CHECKING:
@@ -15,6 +17,51 @@ if TYPE_CHECKING:
     from .router import RouteResult
 
 logger = get_logger(__name__)
+
+# Cache for loaded command plugins
+_command_plugins: dict[str, CommandBackend] | None = None
+
+
+def _load_command_plugins() -> dict[str, CommandBackend]:
+    """Load and cache command plugins."""
+    global _command_plugins
+    if _command_plugins is not None:
+        return _command_plugins
+
+    _command_plugins = {}
+    discovery = discover_command_plugins()
+
+    for error in discovery.errors:
+        logger.warning("command.plugin.discovery_error", error=error)
+
+    for entry in discovery.entries:
+        loaded = load_plugin(entry)
+        if loaded.error:
+            logger.warning(
+                "command.plugin.load_error",
+                command=entry.id,
+                error=loaded.error,
+            )
+            continue
+
+        _command_plugins[loaded.id] = loaded.backend
+        logger.debug(
+            "command.plugin.loaded",
+            command=loaded.id,
+            distribution=loaded.distribution,
+        )
+
+    return _command_plugins
+
+
+def get_command_plugins() -> dict[str, CommandBackend]:
+    """Get all loaded command plugins."""
+    return _load_command_plugins()
+
+
+def list_plugin_command_ids() -> list[str]:
+    """List all available plugin command IDs."""
+    return list(get_command_plugins().keys())
 
 
 async def handle_slash_command(
@@ -25,6 +72,10 @@ async def handle_slash_command(
     """Handle a slash command in the General topic."""
     command = route.command
     args = route.command_args
+
+    # Guard for None command
+    if command is None:
+        return
 
     handlers = {
         "clone": _handle_clone,
@@ -38,21 +89,74 @@ async def handle_slash_command(
     }
 
     handler = handlers.get(command)
-    if handler is None:
-        # Unknown command - let it fall through to orchestrator
+    if handler is not None:
+        try:
+            await handler(manager, args, reply_to_message_id)
+        except Exception as e:
+            logger.exception(
+                "workspace.command.error",
+                command=command,
+                error=str(e),
+            )
+            await manager.send_to_topic(
+                None,  # General topic
+                f"❌ Error executing /{command}: {e}",
+                reply_to_message_id=reply_to_message_id,
+            )
         return
 
-    try:
-        await handler(manager, args, reply_to_message_id)
-    except Exception as e:
-        logger.exception(
-            "workspace.command.error",
-            command=command,
-            error=str(e),
-        )
+    # Check for plugin commands
+    plugins = get_command_plugins()
+    plugin = plugins.get(command)
+    if plugin is not None:
+        try:
+            await _handle_plugin_command(
+                manager, plugin, command, args, reply_to_message_id
+            )
+        except Exception as e:
+            logger.exception(
+                "workspace.command.plugin_error",
+                command=command,
+                error=str(e),
+            )
+            await manager.send_to_topic(
+                None,
+                f"❌ Error executing /{command}: {e}",
+                reply_to_message_id=reply_to_message_id,
+            )
+        return
+
+    # Unknown command - let it fall through to orchestrator
+
+
+async def _handle_plugin_command(
+    manager: "WorkspaceManager",
+    plugin: CommandBackend,
+    command: str,
+    args: str,
+    reply_to_message_id: int,
+) -> None:
+    """Handle a plugin command."""
+    # Build command context
+    ctx = CommandContext(
+        command=command,
+        args_text=args,
+        raw_text=f"/{command} {args}".strip(),
+        message_id=reply_to_message_id,
+        config_path=manager.config.config_path(),
+        plugin_config=manager.config.plugin_configs.get(plugin.id, {}),
+        # Note: runtime and executor would need to be provided for full functionality
+        # For now, plugins can use basic functionality
+    )
+
+    # Call plugin handler
+    result = await plugin.handle(ctx)
+
+    # Send result if returned
+    if result is not None:
         await manager.send_to_topic(
             None,  # General topic
-            f"❌ Error executing /{command}: {e}",
+            result.text,
             reply_to_message_id=reply_to_message_id,
         )
 
@@ -520,45 +624,61 @@ async def _handle_help(
     reply_to_message_id: int,
 ) -> None:
     """Handle /help"""
-    help_text = """📖 Pochi Workspace Commands
+    help_lines = [
+        "📖 Pochi Workspace Commands",
+        "",
+        "General Topic Commands:",
+        "  /clone <name> <git-url> [path]",
+        "    Clone a git repo and create a topic for it",
+        "",
+        "  /create <name> [--no-git]",
+        "    Create a new folder (with git init by default)",
+        "    Use --no-git for non-repo folders like knowledge vaults",
+        "",
+        "  /add <name> <path>",
+        "    Add an existing folder to the workspace",
+        "",
+        "  /list",
+        "    List all folders in the workspace",
+        "",
+        "  /remove <name>",
+        "    Remove a folder from workspace (doesn't delete files)",
+        "",
+        "  /status",
+        "    Show workspace status",
+        "",
+        "  /engine [name]",
+        "    Show or set the default engine (claude, codex, etc.)",
+        "",
+        "  /help",
+        "    Show this help message",
+        "",
+        "Worker Topic Commands:",
+        "  /ralph <prompt> [--max-iterations N]",
+        "    Run an iterative agent loop",
+        "",
+        "  /cancel",
+        "    Cancel the current run or ralph loop",
+    ]
 
-General Topic Commands:
-  /clone <name> <git-url> [path]
-    Clone a git repo and create a topic for it
+    # Add plugin commands if any
+    plugins = get_command_plugins()
+    if plugins:
+        help_lines.append("")
+        help_lines.append("Plugin Commands:")
+        for cmd_id, plugin in sorted(plugins.items()):
+            desc = getattr(plugin, "description", "")
+            if desc:
+                help_lines.append(f"  /{cmd_id}")
+                help_lines.append(f"    {desc}")
+            else:
+                help_lines.append(f"  /{cmd_id}")
 
-  /create <name> [--no-git]
-    Create a new folder (with git init by default)
-    Use --no-git for non-repo folders like knowledge vaults
+    help_lines.append("")
+    help_lines.append("Or just send a message to chat with the agent!")
 
-  /add <name> <path>
-    Add an existing folder to the workspace
-
-  /list
-    List all folders in the workspace
-
-  /remove <name>
-    Remove a folder from workspace (doesn't delete files)
-
-  /status
-    Show workspace status
-
-  /engine [name]
-    Show or set the default engine (claude, codex, etc.)
-
-  /help
-    Show this help message
-
-Worker Topic Commands:
-  /ralph <prompt> [--max-iterations N]
-    Run an iterative agent loop
-
-  /cancel
-    Cancel the current run or ralph loop
-
-Or just send a message to chat with the agent!
-"""
     await manager.send_to_topic(
         None,
-        help_text,
+        "\n".join(help_lines),
         reply_to_message_id=reply_to_message_id,
     )
