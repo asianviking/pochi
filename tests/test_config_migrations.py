@@ -11,6 +11,7 @@ from pochi.config_migrations import (
     migrate_config_file,
     _migrate_repos_to_folders,
     _migrate_legacy_telegram,
+    _migrate_telegram_to_transports,
 )
 from pochi.config_store import (
     WORKSPACE_CONFIG_DIR,
@@ -153,6 +154,54 @@ class TestMigrateLegacyTelegram:
         assert config["telegram"]["chat_id"] == 123
 
 
+class TestMigrateTelegramToTransports:
+    """Tests for _migrate_telegram_to_transports migration."""
+
+    def test_migrates_telegram_to_transports(self) -> None:
+        """Test moving [telegram] to [transports.telegram]."""
+        config = {
+            "workspace": {"name": "test"},
+            "telegram": {
+                "bot_token": "secret-token",
+                "chat_id": 123456,
+            },
+        }
+
+        result = _migrate_telegram_to_transports(config)
+
+        assert result is True
+        assert "telegram" not in config
+        assert "transports" in config
+        assert "telegram" in config["transports"]
+        assert config["transports"]["telegram"]["bot_token"] == "secret-token"
+        assert config["transports"]["telegram"]["chat_id"] == 123456
+
+    def test_does_nothing_if_no_telegram(self) -> None:
+        """Test no change if telegram section doesn't exist."""
+        config = {"workspace": {"name": "test"}}
+
+        result = _migrate_telegram_to_transports(config)
+
+        assert result is False
+        assert "transports" not in config
+
+    def test_removes_telegram_if_transports_exists(self) -> None:
+        """Test removes telegram if transports.telegram already exists."""
+        config = {
+            "workspace": {"name": "test"},
+            "telegram": {"bot_token": "old-token", "chat_id": 111},
+            "transports": {"telegram": {"bot_token": "new-token", "chat_id": 999}},
+        }
+
+        result = _migrate_telegram_to_transports(config)
+
+        assert result is True
+        assert "telegram" not in config
+        # Transports should be unchanged
+        assert config["transports"]["telegram"]["bot_token"] == "new-token"
+        assert config["transports"]["telegram"]["chat_id"] == 999
+
+
 class TestMigrateConfig:
     """Tests for migrate_config function."""
 
@@ -171,15 +220,18 @@ class TestMigrateConfig:
 
         assert "repos-to-folders" in applied
         assert "legacy-telegram" in applied
-        assert len(applied) == 2
+        assert "telegram-to-transports" in applied
+        assert len(applied) == 3
 
     def test_returns_empty_if_no_migrations_needed(self, tmp_path: Path) -> None:
         """Test returns empty list if config is already migrated."""
         config = {
             "workspace": {"name": "test"},
-            "telegram": {
-                "bot_token": "token",
-                "chat_id": 123,
+            "transports": {
+                "telegram": {
+                    "bot_token": "token",
+                    "chat_id": 123,
+                },
             },
             "folders": {},
         }
@@ -208,14 +260,17 @@ class TestMigrateConfigFile:
 
         assert "repos-to-folders" in applied
         assert "legacy-telegram" in applied
+        assert "telegram-to-transports" in applied
 
         # Verify file was updated
         updated = read_raw_toml(config_path)
         assert "folders" in updated
         assert "repos" not in updated
-        assert "telegram" in updated
-        assert updated["telegram"]["bot_token"] == "token"
-        assert updated["telegram"]["chat_id"] == 123
+        # telegram is now migrated to transports.telegram
+        assert "telegram" not in updated
+        assert "transports" in updated
+        assert updated["transports"]["telegram"]["bot_token"] == "token"
+        assert updated["transports"]["telegram"]["chat_id"] == 123
 
     def test_creates_backup(self, tmp_path: Path) -> None:
         """Test creates backup before migration."""
@@ -243,9 +298,11 @@ class TestMigrateConfigFile:
         """Test returns empty list if no migrations needed."""
         data = {
             "workspace": {"name": "test"},
-            "telegram": {
-                "bot_token": "token",
-                "chat_id": 123,
+            "transports": {
+                "telegram": {
+                    "bot_token": "token",
+                    "chat_id": 123,
+                },
             },
         }
         config_path = _write_config(data, tmp_path)

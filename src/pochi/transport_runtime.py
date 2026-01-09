@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING, Any
 from .model import EngineId, ResumeToken
 
 if TYPE_CHECKING:
-    from .router import AutoRouter
+    from .config import WorkspaceConfig
+    from .router import AutoRouter, RunnerEntry
     from .runner import Runner
 
 
@@ -53,6 +54,7 @@ class TransportRuntime:
     - Select the appropriate engine runner
     - Access folder/project configuration
     - Get plugin-specific configuration
+    - Build startup messages
     """
 
     def __init__(
@@ -62,6 +64,9 @@ class TransportRuntime:
         config_path: Path | None = None,
         plugin_configs: dict[str, dict[str, Any]] | None = None,
         folder_aliases: tuple[str, ...] = (),
+        workspace_config: "WorkspaceConfig | None" = None,
+        available_entries: list["RunnerEntry"] | None = None,
+        unavailable_entries: list["RunnerEntry"] | None = None,
     ) -> None:
         """Initialize the transport runtime.
 
@@ -70,16 +75,32 @@ class TransportRuntime:
             config_path: Path to the workspace config file
             plugin_configs: Dict of plugin_id -> config dict
             folder_aliases: Tuple of available folder/project aliases
+            workspace_config: The full workspace configuration
+            available_entries: List of available runner entries (for startup message)
+            unavailable_entries: List of unavailable runner entries (for startup message)
         """
         self._router = router
         self._config_path = config_path
         self._plugin_configs = plugin_configs or {}
         self._folder_aliases = folder_aliases
+        self._workspace_config = workspace_config
+        self._available_entries = available_entries or []
+        self._unavailable_entries = unavailable_entries or []
+
+    @property
+    def router(self) -> "AutoRouter":
+        """Get the underlying router."""
+        return self._router
 
     @property
     def config_path(self) -> Path | None:
         """Get the active config file path (if available)."""
         return self._config_path
+
+    @property
+    def workspace_config(self) -> "WorkspaceConfig | None":
+        """Get the full workspace configuration."""
+        return self._workspace_config
 
     @property
     def default_engine(self) -> EngineId:
@@ -240,3 +261,43 @@ class TransportRuntime:
         if folder:
             return f"[{folder}]"
         return None
+
+    def build_startup_message(
+        self,
+        workspace_root: Path,
+        final_notify: bool = True,
+    ) -> str:
+        """Build the startup message for the transport.
+
+        Args:
+            workspace_root: Path to the workspace root
+            final_notify: Whether final_notify is enabled
+
+        Returns:
+            Formatted startup message
+        """
+        workspace_config = self._workspace_config
+
+        if workspace_config is None:
+            return "\N{DOG FACE} **pochi ready**"
+
+        # Build startup message with engine info
+        repo_count = len(workspace_config.folders)
+        ralph_status = "enabled" if workspace_config.ralph.enabled else "on-demand"
+        available_engines = [e.engine for e in self._available_entries]
+        unavailable_engines = [e.engine for e in self._unavailable_entries]
+
+        agents_line = ", ".join(f"`{e}`" for e in available_engines)
+        if unavailable_engines:
+            not_installed = ", ".join(f"`{e}`" for e in unavailable_engines)
+            agents_line = f"{agents_line} (not installed: {not_installed})"
+
+        return (
+            f"\N{DOG FACE} **pochi ready**\n\n"
+            f"workspace: `{workspace_config.name}`  \n"
+            f"repos: `{repo_count}`  \n"
+            f"default: `{self.default_engine}`  \n"
+            f"agents: {agents_line}  \n"
+            f"ralph: `{ralph_status}`  \n"
+            f"working in: `{workspace_root}`"
+        )

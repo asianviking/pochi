@@ -86,6 +86,7 @@ class WorkspaceSettings(BaseSettings):
     # Core workspace settings
     name: str = ""
     default_engine: str = "claude"
+    default_transport: str = "telegram"  # Default transport if not specified
 
     # Worktree settings
     worktrees_dir: str = ".worktrees"  # Directory name for worktrees within folders
@@ -93,7 +94,10 @@ class WorkspaceSettings(BaseSettings):
         None  # Base branch for new worktrees (auto-detect if None)
     )
 
-    # Transport config
+    # Transport configs (new format: [transports.<id>] sections)
+    transports: dict[str, dict[str, Any]] = {}
+
+    # Legacy transport config - will be migrated to [transports.telegram]
     telegram: TelegramSettings | None = None
 
     # Folders config (dict keyed by folder name)
@@ -121,6 +125,37 @@ class WorkspaceSettings(BaseSettings):
                 chat_id=self.telegram_group_id,
             )
         return self
+
+    def transport_config(self, transport_id: str) -> dict[str, Any]:
+        """Get configuration for a specific transport.
+
+        Checks [transports.<id>] first, falls back to legacy [telegram] section.
+        """
+        # Check new format first
+        if transport_id in self.transports:
+            return self.transports[transport_id]
+
+        # Fall back to legacy telegram section
+        if transport_id == "telegram" and self.telegram:
+            return {
+                "bot_token": self.telegram.bot_token.get_secret_value(),
+                "chat_id": self.telegram.chat_id,
+            }
+
+        return {}
+
+    def configured_transport_ids(self) -> list[str]:
+        """Get list of transport IDs that have configuration."""
+        ids: list[str] = []
+
+        # Check new format
+        ids.extend(self.transports.keys())
+
+        # Check legacy telegram section (if not already in transports)
+        if "telegram" not in ids and self.telegram:
+            ids.append("telegram")
+
+        return ids
 
 
 def find_workspace_root(start_path: Path | None = None) -> Path | None:
@@ -223,6 +258,31 @@ def _parse_plugin_configs(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return configs
 
 
+def _parse_transports(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Parse transport configurations from [transports.<id>] sections.
+
+    Example TOML:
+        [transports.telegram]
+        bot_token = "..."
+        chat_id = 12345
+
+        [transports.discord]
+        bot_token = "..."
+        guild_id = 12345
+
+    Returns:
+        Dict mapping transport_id to config dict
+    """
+    transports_data = data.get("transports", {})
+    transports: dict[str, dict[str, Any]] = {}
+
+    for transport_id, transport_config in transports_data.items():
+        if isinstance(transport_config, dict):
+            transports[transport_id] = transport_config
+
+    return transports
+
+
 def load_settings(workspace_root: Path | None = None) -> WorkspaceSettings | None:
     """Load workspace settings from TOML file.
 
@@ -263,8 +323,10 @@ def load_settings(workspace_root: Path | None = None) -> WorkspaceSettings | Non
         settings = WorkspaceSettings(
             name=workspace_data.get("name", workspace_root.name),
             default_engine=workspace_data.get("default_engine", "claude"),
+            default_transport=workspace_data.get("default_transport", "telegram"),
             worktrees_dir=workspace_data.get("worktrees_dir", ".worktrees"),
             worktree_base=workspace_data.get("worktree_base"),
+            transports=_parse_transports(data),
             telegram=_parse_telegram(data),
             folders=_parse_folders(data),
             ralph=_parse_ralph(data),

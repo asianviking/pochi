@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import shutil
+import tomllib
 from pathlib import Path
+from typing import Any
 
 import anyio
 import typer
-
-import tomllib
-from typing import Any
 
 from . import __version__
 from .backends import EngineBackend
@@ -178,13 +177,15 @@ def app_main(
 
 
 def _run_workspace(*, final_notify: bool, debug: bool) -> None:
-    """Run pochi in workspace mode."""
+    """Run pochi in workspace mode using the transport plugin system."""
     from .config_migrations import migrate_config_file
     from .config_store import get_config_path
-    from .workspace.bridge import WorkspaceBridgeConfig, run_workspace_loop
-    from .workspace.manager import WorkspaceManager
-    from .workspace.ralph import RalphManager
-    from .workspace.router import WorkspaceRouter
+    from .transport_loader import (
+        TransportLoadError,
+        TransportNotFoundError,
+        get_configured_transports,
+    )
+    from .transport_runtime import TransportRuntime
 
     setup_logging(debug=debug)
 
@@ -207,12 +208,22 @@ def _run_workspace(*, final_notify: bool, debug: bool) -> None:
         typer.echo("error: failed to load workspace config", err=True)
         raise typer.Exit(code=1)
 
-    if not workspace_config.bot_token:
-        typer.echo("error: bot_token not set in workspace config", err=True)
+    # Get configured transports
+    try:
+        configured_transports = get_configured_transports(workspace_config)
+    except TransportNotFoundError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(code=1)
+    except TransportLoadError as e:
+        typer.echo(f"error: {e}", err=True)
         raise typer.Exit(code=1)
 
-    if not workspace_config.telegram_group_id:
-        typer.echo("error: telegram_group_id not set in workspace config", err=True)
+    if not configured_transports:
+        typer.echo(
+            "error: no transports configured. "
+            "Add [transports.telegram] or [telegram] section to workspace config.",
+            err=True,
+        )
         raise typer.Exit(code=1)
 
     # Build router with all available engines
@@ -222,54 +233,54 @@ def _run_workspace(*, final_notify: bool, debug: bool) -> None:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(code=1)
 
-    # Create Telegram client
-    bot = TelegramClient(workspace_config.bot_token)
-
-    # Create workspace components
-    workspace_router = WorkspaceRouter(workspace_config)
-    workspace_manager = WorkspaceManager(workspace_config, bot)
-    workspace_manager.set_router(workspace_router)
-
-    # Create Ralph manager
-    ralph_manager = RalphManager(workspace_config, bot, router)
-
-    # Build startup message with engine info
-    repo_count = len(workspace_config.folders)
-    ralph_status = "enabled" if workspace_config.ralph.enabled else "on-demand"
-    available_engines = [e.engine for e in available]
-    unavailable_engines = [e.engine for e in unavailable]
-
-    agents_line = ", ".join(f"`{e}`" for e in available_engines)
-    if unavailable_engines:
-        not_installed = ", ".join(f"`{e}`" for e in unavailable_engines)
-        agents_line = f"{agents_line} (not installed: {not_installed})"
-
-    startup_msg = (
-        f"\N{DOG FACE} **pochi ready**\n\n"
-        f"workspace: `{workspace_config.name}`  \n"
-        f"repos: `{repo_count}`  \n"
-        f"default: `{router.default_engine}`  \n"
-        f"agents: {agents_line}  \n"
-        f"ralph: `{ralph_status}`  \n"
-        f"working in: `{workspace_root}`"
+    # Build shared runtime for transports
+    runtime = TransportRuntime(
+        router=router,
+        config_path=workspace_config.config_path(),
+        plugin_configs=workspace_config.plugin_configs,
+        folder_aliases=tuple(workspace_config.folders.keys()),
+        workspace_config=workspace_config,
+        available_entries=available,
+        unavailable_entries=unavailable,
     )
 
-    cfg = WorkspaceBridgeConfig(
-        bot=bot,
-        router=router,
-        workspace=workspace_config,
-        workspace_router=workspace_router,
-        workspace_manager=workspace_manager,
-        ralph_manager=ralph_manager,
-        final_notify=final_notify,
-        startup_msg=startup_msg,
+    # Run all configured transports
+    # For now, we only support single transport at a time
+    # TODO: Run multiple transports concurrently
+    if len(configured_transports) > 1:
+        transport_ids = [t.transport_id for t in configured_transports]
+        logger.info(
+            "transports.multiple_configured",
+            transports=transport_ids,
+            using=configured_transports[0].transport_id,
+        )
+        typer.echo(
+            f"Note: Multiple transports configured ({', '.join(transport_ids)}). "
+            f"Running {configured_transports[0].transport_id} only."
+        )
+
+    transport = configured_transports[0]
+    logger.info(
+        "transport.starting",
+        transport=transport.transport_id,
+        workspace=workspace_config.name,
     )
 
     try:
-        anyio.run(run_workspace_loop, cfg)
+        transport.backend.build_and_run(
+            transport_config=transport.config,
+            config_path=workspace_config.config_path(),
+            runtime=runtime,
+            final_notify=final_notify,
+            default_engine_override=None,
+        )
     except KeyboardInterrupt:
         logger.info("shutdown.interrupted")
         raise typer.Exit(code=130)
+    except Exception as e:
+        logger.exception("transport.failed", error=str(e))
+        typer.echo(f"error: transport failed: {e}", err=True)
+        raise typer.Exit(code=1)
 
 
 @app.command("init", help="Initialize a workspace in current dir or [FOLDER].")
@@ -409,8 +420,14 @@ def info_command() -> None:
 
     typer.echo(f"Workspace: {config.name}")
     typer.echo(f"Root: {config.root}")
-    typer.echo(f"Telegram Group: {config.telegram_group_id}")
+    typer.echo(f"Default Engine: {config.default_engine}")
+    typer.echo(f"Default Transport: {config.default_transport}")
     typer.echo(f"Folders: {len(config.folders)}")
+
+    # Show configured transports
+    transport_ids = config.configured_transport_ids()
+    if transport_ids:
+        typer.echo(f"Transports: {', '.join(transport_ids)}")
     typer.echo("")
 
     if config.folders:
