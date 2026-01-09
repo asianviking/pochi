@@ -76,6 +76,7 @@ class WorkspaceSettings(BaseSettings):
     # Core workspace settings
     name: str = ""
     default_engine: str = "claude"
+    message_batch_window_ms: float = 200.0
 
     # Transport config
     telegram: TelegramSettings | None = None
@@ -208,6 +209,7 @@ def load_settings(workspace_root: Path | None = None) -> WorkspaceSettings | Non
         settings = WorkspaceSettings(
             name=workspace_data.get("name", workspace_root.name),
             default_engine=workspace_data.get("default_engine", "claude"),
+            message_batch_window_ms=workspace_data.get("message_batch_window_ms", 200.0),
             telegram=_parse_telegram(data),
             folders=_parse_folders(data),
             ralph=_parse_ralph(data),

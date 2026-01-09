@@ -92,6 +92,7 @@ class WorkspaceConfig:
     folders: dict[str, FolderConfig] = field(default_factory=dict)
     ralph: RalphConfig = field(default_factory=RalphConfig)
     default_engine: str = "claude"
+    message_batch_window_ms: float = 200.0
 
     # Transport configs
     telegram: TelegramConfig | None = None
@@ -168,6 +169,7 @@ def _settings_to_config(settings: WorkspaceSettings, root: Path) -> WorkspaceCon
         folders=folders,
         ralph=ralph,
         default_engine=settings.default_engine,
+        message_batch_window_ms=settings.message_batch_window_ms,
         telegram=telegram,
         telegram_group_id=telegram_group_id,
         bot_token=bot_token,
@@ -209,6 +211,8 @@ def save_workspace_config(config: WorkspaceConfig) -> None:
     workspace.add("name", config.name)
     if config.default_engine != "claude":
         workspace.add("default_engine", config.default_engine)
+    if config.message_batch_window_ms != 200.0:
+        workspace.add("message_batch_window_ms", config.message_batch_window_ms)
     doc.add("workspace", workspace)
 
     # [telegram] section (new format)
