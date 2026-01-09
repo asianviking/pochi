@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import tomlkit
 
@@ -31,6 +32,7 @@ logger = get_logger(__name__)
 __all__ = [
     "ConfigError",
     "FolderConfig",
+    "PluginsConfig",
     "RalphConfig",
     "TelegramConfig",
     "WorkspaceConfig",
@@ -43,6 +45,17 @@ __all__ = [
     "WORKSPACE_CONFIG_DIR",
     "WORKSPACE_CONFIG_FILE",
 ]
+
+
+@dataclass
+class PluginsConfig:
+    """Plugin configuration."""
+
+    # List of distribution names to enable. Empty = load all.
+    enabled: list[str] = field(default_factory=list)
+
+    # Reserved for future use - not implemented
+    auto_install: bool = False
 
 
 @dataclass
@@ -102,6 +115,10 @@ class WorkspaceConfig:
     # Transport configs
     telegram: TelegramConfig | None = None
 
+    # Plugin configuration
+    plugins: PluginsConfig = field(default_factory=PluginsConfig)
+    plugin_configs: dict[str, dict[str, Any]] = field(default_factory=dict)
+
     # Legacy fields for backwards compatibility
     telegram_group_id: int = 0
     bot_token: str = ""
@@ -158,6 +175,12 @@ def _settings_to_config(settings: WorkspaceSettings, root: Path) -> WorkspaceCon
             chat_id=settings.telegram.chat_id,
         )
 
+    # Convert plugins
+    plugins = PluginsConfig(
+        enabled=settings.plugins.enabled,
+        auto_install=settings.plugins.auto_install,
+    )
+
     # Get legacy fields (for backward compatibility)
     bot_token = ""
     telegram_group_id = 0
@@ -177,6 +200,8 @@ def _settings_to_config(settings: WorkspaceSettings, root: Path) -> WorkspaceCon
         worktrees_dir=settings.worktrees_dir,
         worktree_base=settings.worktree_base,
         telegram=telegram,
+        plugins=plugins,
+        plugin_configs=settings.plugin_configs,
         telegram_group_id=telegram_group_id,
         bot_token=bot_token,
     )

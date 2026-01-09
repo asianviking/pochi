@@ -1,38 +1,72 @@
+"""Engine backend discovery and management.
+
+Engines are discovered via Python entrypoints (pochi.engine_backends group).
+This replaces the previous pkgutil-based discovery from runners/ modules.
+"""
+
 from __future__ import annotations
 
-import importlib
-import pkgutil
 from functools import cache
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
 from .backends import EngineBackend, EngineConfig
-from .config import ConfigError
+from .logging import get_logger
+from .plugins import (
+    discover_engine_plugins,
+    load_plugin,
+)
+from .settings import ConfigError
+
+logger = get_logger(__name__)
 
 
-def _discover_backends() -> dict[str, EngineBackend]:
-    """Discover all backends from runners/ modules.
+def _discover_backends(
+    *,
+    enabled_distributions: set[str] | None = None,
+) -> dict[str, EngineBackend]:
+    """Discover and load all engine backends via entrypoints.
 
-    Each runner module can export a BACKEND constant of type EngineBackend.
+    Args:
+        enabled_distributions: If set, only load plugins from these distributions.
+            If None or empty, load all plugins.
+
+    Returns:
+        Dict mapping engine ID to EngineBackend.
     """
-    import pochi.runners as runners_pkg
-
+    discovery = discover_engine_plugins()
     backends: dict[str, EngineBackend] = {}
-    prefix = runners_pkg.__name__ + "."
 
-    for module_info in pkgutil.iter_modules(runners_pkg.__path__, prefix):
-        try:
-            mod = importlib.import_module(module_info.name)
-        except ImportError:
+    # Log any discovery errors
+    for error in discovery.errors:
+        logger.warning("engine.discovery.error", error=error)
+
+    for entry in discovery.entries:
+        # Check enabled filter
+        if enabled_distributions:
+            dist_lower = (entry.distribution or "").lower()
+            if not any(
+                dist_lower == enabled.lower() for enabled in enabled_distributions
+            ):
+                continue
+
+        loaded = load_plugin(entry)
+
+        if loaded.error:
+            logger.warning(
+                "engine.load.error",
+                engine=entry.id,
+                error=loaded.error,
+            )
             continue
 
-        backend = getattr(mod, "BACKEND", None)
-        if backend is None:
-            continue
-        if not isinstance(backend, EngineBackend):
-            raise RuntimeError(f"{module_info.name}.BACKEND is not an EngineBackend")
-        backends[backend.id] = backend
+        backends[loaded.id] = loaded.backend
+        logger.debug(
+            "engine.loaded",
+            engine=loaded.id,
+            distribution=loaded.distribution,
+        )
 
     return backends
 
@@ -74,3 +108,8 @@ def get_engine_config(
             f"Invalid `{engine_id}` config in {config_path}; expected a table."
         )
     return engine_cfg
+
+
+def clear_engine_cache() -> None:
+    """Clear the engine backend cache (for testing)."""
+    _backends.cache_clear()

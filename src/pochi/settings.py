@@ -33,6 +33,16 @@ class ConfigError(RuntimeError):
     pass
 
 
+class PluginsSettings(BaseModel):
+    """Plugin configuration."""
+
+    # List of distribution names to enable. Empty = load all.
+    enabled: list[str] = []
+
+    # Reserved for future use - not implemented
+    auto_install: bool = False
+
+
 class RalphSettings(BaseModel):
     """Ralph Wiggum loop configuration."""
 
@@ -91,6 +101,12 @@ class WorkspaceSettings(BaseSettings):
 
     # Ralph config (nested under [workers.ralph] in TOML)
     ralph: RalphSettings = RalphSettings()
+
+    # Plugins configuration
+    plugins: PluginsSettings = PluginsSettings()
+
+    # Per-plugin configuration from [plugins.<id>] sections
+    plugin_configs: dict[str, dict[str, Any]] = {}
 
     # Legacy fields - will be migrated to [telegram] section
     telegram_group_id: int | None = None
@@ -174,6 +190,39 @@ def _parse_telegram(data: dict[str, Any]) -> TelegramSettings | None:
     return None
 
 
+def _parse_plugins(data: dict[str, Any]) -> PluginsSettings:
+    """Parse plugins config from raw TOML data."""
+    plugins_data = data.get("plugins", {})
+    return PluginsSettings(
+        enabled=plugins_data.get("enabled", []),
+        auto_install=plugins_data.get("auto_install", False),
+    )
+
+
+def _parse_plugin_configs(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Parse per-plugin configuration from [plugins.<id>] sections.
+
+    Example TOML:
+        [plugins.multi]
+        engines = ["claude", "codex"]
+
+    Returns:
+        Dict mapping plugin_id to config dict
+    """
+    plugins_data = data.get("plugins", {})
+    configs: dict[str, dict[str, Any]] = {}
+
+    for key, value in plugins_data.items():
+        # Skip top-level settings
+        if key in ("enabled", "auto_install"):
+            continue
+        # Plugin-specific config should be a dict
+        if isinstance(value, dict):
+            configs[key] = value
+
+    return configs
+
+
 def load_settings(workspace_root: Path | None = None) -> WorkspaceSettings | None:
     """Load workspace settings from TOML file.
 
@@ -219,6 +268,8 @@ def load_settings(workspace_root: Path | None = None) -> WorkspaceSettings | Non
             telegram=_parse_telegram(data),
             folders=_parse_folders(data),
             ralph=_parse_ralph(data),
+            plugins=_parse_plugins(data),
+            plugin_configs=_parse_plugin_configs(data),
             telegram_group_id=legacy_group_id,
             bot_token=SecretStr(legacy_bot_token) if legacy_bot_token else None,
         )
