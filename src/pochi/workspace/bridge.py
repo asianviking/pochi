@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -81,6 +81,197 @@ def _parse_topic_resume_key(key: str) -> tuple[int | None, str]:
         return None, key[8:]
     # Fallback - treat as general topic
     return None, key
+
+
+@dataclass
+class PendingMessage:
+    """A message waiting in the debounce queue."""
+
+    message_id: int
+    text: str
+    timestamp: float
+    reply_to: dict[str, Any] | None
+    raw_message: dict[str, Any]
+
+
+@dataclass
+class MessageBatch:
+    """Combined messages ready for dispatch."""
+
+    message_ids: list[int]
+    combined_text: str
+    first_reply_to: dict[str, Any] | None
+    last_message_id: int
+    topic_id: int | None
+    raw_messages: list[dict[str, Any]] = field(default_factory=list)
+
+
+class TopicDebouncer:
+    """Batches messages per topic within a debounce window.
+
+    When messages arrive rapidly for the same topic, they are collected
+    and combined into a single batch after the debounce window expires.
+    This prevents multiple runner invocations when users send multiple
+    messages in quick succession.
+
+    Usage:
+        debouncer = TopicDebouncer(window_ms=200.0)
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(debouncer.run_timers)
+
+            async for update in poller(cfg):
+                msg = update["message"]
+                topic_id = msg.get("message_thread_id")
+
+                async for batch in debouncer.add(topic_id, msg):
+                    # Process the batch
+                    ...
+    """
+
+    def __init__(
+        self,
+        window_ms: float = 200.0,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self.window_ms = window_ms
+        self.window_s = window_ms / 1000.0
+        self._clock = clock
+        self._pending: dict[int | None, list[PendingMessage]] = {}
+        self._deadlines: dict[int | None, float] = {}
+        self._ready_queue: list[MessageBatch] = []
+        self._new_message = anyio.Event()
+
+    def _is_slash_command(self, text: str) -> bool:
+        """Check if text is a slash command that should bypass debouncing."""
+        return text.strip().startswith("/")
+
+    def add_message(
+        self,
+        topic_id: int | None,
+        msg: dict[str, Any],
+    ) -> list[MessageBatch]:
+        """Add a message to the debounce queue.
+
+        Args:
+            topic_id: The topic ID (message_thread_id) or None for General.
+            msg: The raw Telegram message dict.
+
+        Returns:
+            List of batches ready to dispatch (may be empty, or contain
+            a flushed batch plus a slash command batch).
+        """
+        text = msg.get("text", "")
+        message_id = msg["message_id"]
+        reply_to = msg.get("reply_to_message")
+        ready_batches: list[MessageBatch] = []
+
+        # Slash commands bypass debouncing entirely
+        if self._is_slash_command(text):
+            # If there are pending messages for this topic, flush them first
+            if topic_id in self._pending and self._pending[topic_id]:
+                ready_batches.append(self._flush_topic(topic_id))
+
+            # Return the slash command as its own single-message batch
+            ready_batches.append(
+                MessageBatch(
+                    message_ids=[message_id],
+                    combined_text=text,
+                    first_reply_to=reply_to,
+                    last_message_id=message_id,
+                    topic_id=topic_id,
+                    raw_messages=[msg],
+                )
+            )
+            return ready_batches
+
+        # Add to pending queue
+        pending_msg = PendingMessage(
+            message_id=message_id,
+            text=text,
+            timestamp=self._clock(),
+            reply_to=reply_to,
+            raw_message=msg,
+        )
+
+        if topic_id not in self._pending:
+            self._pending[topic_id] = []
+
+        self._pending[topic_id].append(pending_msg)
+
+        # Update deadline for this topic (reset the timer)
+        self._deadlines[topic_id] = self._clock() + self.window_s
+
+        # Signal that we have a new message (wakes up the timer task)
+        self._new_message.set()
+
+        return ready_batches
+
+    def check_expired(self) -> list[MessageBatch]:
+        """Check for topics whose debounce window has expired.
+
+        Returns:
+            List of batches ready to dispatch.
+        """
+        ready_batches: list[MessageBatch] = []
+        now = self._clock()
+
+        expired_topics = [
+            topic_id
+            for topic_id, deadline in self._deadlines.items()
+            if now >= deadline
+        ]
+
+        for topic_id in expired_topics:
+            if topic_id in self._pending and self._pending[topic_id]:
+                ready_batches.append(self._flush_topic(topic_id))
+
+        return ready_batches
+
+    def _flush_topic(self, topic_id: int | None) -> MessageBatch:
+        """Flush a specific topic's pending messages into a batch."""
+        messages = self._pending.pop(topic_id, [])
+        self._deadlines.pop(topic_id, None)
+        return self._combine(topic_id, messages)
+
+    def _combine(
+        self, topic_id: int | None, messages: list[PendingMessage]
+    ) -> MessageBatch:
+        """Combine pending messages into a batch."""
+        return MessageBatch(
+            message_ids=[m.message_id for m in messages],
+            combined_text="\n".join(m.text for m in messages),
+            first_reply_to=messages[0].reply_to if messages else None,
+            last_message_id=messages[-1].message_id if messages else 0,
+            topic_id=topic_id,
+            raw_messages=[m.raw_message for m in messages],
+        )
+
+    def flush_all(self) -> list[MessageBatch]:
+        """Flush all pending batches immediately.
+
+        Returns:
+            List of all pending batches.
+        """
+        batches = []
+        for topic_id in list(self._pending.keys()):
+            if self._pending[topic_id]:
+                batches.append(self._flush_topic(topic_id))
+        return batches
+
+    def next_deadline(self) -> float | None:
+        """Get the next deadline across all topics.
+
+        Returns:
+            Timestamp of next deadline, or None if no pending messages.
+        """
+        if not self._deadlines:
+            return None
+        return min(self._deadlines.values())
+
+    def has_pending(self) -> bool:
+        """Check if there are any pending messages."""
+        return bool(self._pending)
 
 
 async def _send_startup(cfg: WorkspaceBridgeConfig) -> None:
@@ -473,6 +664,35 @@ async def _send_topic_result(
         await cfg.bot.delete_message(chat_id=chat_id, message_id=progress_id)
 
 
+async def _run_debounce_timer(
+    debouncer: TopicDebouncer,
+    on_batch: Callable[[MessageBatch], Awaitable[None]],
+) -> None:
+    """Background task that fires batches when debounce windows expire.
+
+    Args:
+        debouncer: The debouncer instance to check.
+        on_batch: Callback to process ready batches.
+    """
+    while True:
+        deadline = debouncer.next_deadline()
+        if deadline is None:
+            # No pending messages, wait for signal
+            debouncer._new_message = anyio.Event()
+            await debouncer._new_message.wait()
+        else:
+            now = time.monotonic()
+            wait_time = max(0, deadline - now)
+            if wait_time > 0:
+                with anyio.move_on_after(wait_time):
+                    debouncer._new_message = anyio.Event()
+                    await debouncer._new_message.wait()
+
+            # Check for expired batches
+            for batch in debouncer.check_expired():
+                await on_batch(batch)
+
+
 async def run_workspace_loop(
     cfg: WorkspaceBridgeConfig,
     poller: Callable[
@@ -482,6 +702,7 @@ async def run_workspace_loop(
     """Main loop for workspace mode."""
     running_tasks: dict[int, RunningTask] = {}
     chat_id = cfg.workspace.telegram_group_id
+    debouncer = TopicDebouncer(window_ms=cfg.workspace.message_batch_window_ms)
 
     try:
         # Set bot command menu
@@ -558,34 +779,34 @@ async def run_workspace_loop(
                 finally:
                     clear_context()
 
-            async for update in poller(cfg):
-                # Handle callback queries (inline button presses)
-                if update.get("_type") == "callback_query":
-                    await handle_callback_query(cfg, update["callback_query"])
-                    continue
+            async def process_batch(batch: MessageBatch) -> None:
+                """Process a batched message ready for dispatch."""
+                text = batch.combined_text
+                # Reply to the last message in the batch
+                user_msg_id = batch.last_message_id
+                message_thread_id = batch.topic_id
 
-                # Handle regular messages
-                msg = update.get("message")
-                if msg is None:
-                    continue
+                # Log batched messages
+                if len(batch.message_ids) > 1:
+                    logger.info(
+                        "debounce.batch",
+                        message_count=len(batch.message_ids),
+                        topic_id=message_thread_id,
+                        message_ids=batch.message_ids,
+                    )
 
-                text = msg["text"]
-                user_msg_id = msg["message_id"]
-                message_thread_id = msg.get("message_thread_id")
-
-                # Handle /cancel command
+                # Handle /cancel command (should have been caught by debouncer,
+                # but check here as well for safety)
                 if _is_cancel_command(text):
-                    # First, try to cancel a running task if replying to it
-                    reply = msg.get("reply_to_message")
+                    reply = batch.first_reply_to
                     if reply:
                         progress_id = reply.get("message_id")
                         if progress_id is not None:
                             running_task = running_tasks.get(int(progress_id))
                             if running_task is not None:
                                 running_task.cancel_requested.set()
-                                continue
+                                return
 
-                    # In worker topics, also try to cancel any active ralph loop
                     if message_thread_id is not None:
                         if cfg.ralph_manager.cancel_loop(message_thread_id):
                             await cfg.bot.send_message(
@@ -594,7 +815,7 @@ async def run_workspace_loop(
                                 message_thread_id=message_thread_id,
                                 reply_to_message_id=user_msg_id,
                             )
-                            continue
+                            return
 
                     await cfg.bot.send_message(
                         chat_id=chat_id,
@@ -602,7 +823,7 @@ async def run_workspace_loop(
                         message_thread_id=message_thread_id,
                         reply_to_message_id=user_msg_id,
                     )
-                    continue
+                    return
 
                 # Route the message
                 route = cfg.workspace_router.route(message_thread_id, text)
@@ -615,7 +836,7 @@ async def run_workspace_loop(
                         route,
                         user_msg_id,
                     )
-                    continue
+                    return
 
                 # Handle Ralph commands in worker topics
                 if (
@@ -630,7 +851,7 @@ async def run_workspace_loop(
                             message_thread_id=message_thread_id,
                             reply_to_message_id=user_msg_id,
                         )
-                        continue
+                        return
 
                     # Get runner for ralph loop
                     try:
@@ -642,7 +863,7 @@ async def run_workspace_loop(
                             message_thread_id=message_thread_id,
                             reply_to_message_id=user_msg_id,
                         )
-                        continue
+                        return
 
                     tg.start_soon(
                         partial(
@@ -654,7 +875,7 @@ async def run_workspace_loop(
                             runner=entry.runner,
                         ),
                     )
-                    continue
+                    return
 
                 # Reject non-ralph messages if ralph is active in this topic
                 if route.folder is not None and route.folder.topic_id is not None:
@@ -665,7 +886,7 @@ async def run_workspace_loop(
                             message_thread_id=message_thread_id,
                             reply_to_message_id=user_msg_id,
                         )
-                        continue
+                        return
 
                 # Handle unbound topic
                 if route.is_unbound_topic:
@@ -673,10 +894,10 @@ async def run_workspace_loop(
                         message_thread_id,  # type: ignore
                         user_msg_id,
                     )
-                    continue
+                    return
 
                 # Strip engine commands
-                text, engine_override = _strip_engine_command(
+                processed_text, engine_override = _strip_engine_command(
                     text, engine_ids=cfg.router.engine_ids
                 )
 
@@ -689,9 +910,9 @@ async def run_workspace_loop(
                     # Orchestrator in General topic - use workspace root
                     cwd = cfg.workspace.root
 
-                # Resolve resume token from reply
-                r = msg.get("reply_to_message") or {}
-                resume_token = cfg.router.resolve_resume(text, r.get("text"))
+                # Resolve resume token from the first message's reply
+                r = batch.first_reply_to or {}
+                resume_token = cfg.router.resolve_resume(processed_text, r.get("text"))
 
                 # Check if replying to a running task
                 reply_id = r.get("message_id")
@@ -709,12 +930,14 @@ async def run_workspace_loop(
                                 reply_to_message_id=user_msg_id,
                                 disable_notification=True,
                             )
-                            continue
+                            return
 
                 # Inject orchestrator context for new General topic messages
-                job_text = text
+                job_text = processed_text
                 if route.is_general and resume_token is None:
-                    job_text = prepend_orchestrator_context(cfg.workspace, text)
+                    job_text = prepend_orchestrator_context(
+                        cfg.workspace, processed_text
+                    )
 
                 # Start the job
                 tg.start_soon(
@@ -726,6 +949,29 @@ async def run_workspace_loop(
                     cwd,
                     engine_override,
                 )
+
+            # Start the debounce timer background task
+            tg.start_soon(_run_debounce_timer, debouncer, process_batch)
+
+            async for update in poller(cfg):
+                # Handle callback queries (inline button presses)
+                if update.get("_type") == "callback_query":
+                    await handle_callback_query(cfg, update["callback_query"])
+                    continue
+
+                # Handle regular messages
+                msg = update.get("message")
+                if msg is None:
+                    continue
+
+                message_thread_id = msg.get("message_thread_id")
+
+                # Add message to debouncer
+                ready_batches = debouncer.add_message(message_thread_id, msg)
+
+                # Process any immediately-ready batches (slash commands)
+                for batch in ready_batches:
+                    await process_batch(batch)
 
     finally:
         await cfg.bot.close()
