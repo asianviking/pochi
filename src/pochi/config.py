@@ -93,6 +93,12 @@ class WorkspaceConfig:
     ralph: RalphConfig = field(default_factory=RalphConfig)
     default_engine: str = "claude"
 
+    # Worktree settings
+    worktrees_dir: str = ".worktrees"  # Directory name for worktrees within folders
+    worktree_base: str | None = (
+        None  # Base branch for new worktrees (auto-detect if None)
+    )
+
     # Transport configs
     telegram: TelegramConfig | None = None
 
@@ -168,6 +174,8 @@ def _settings_to_config(settings: WorkspaceSettings, root: Path) -> WorkspaceCon
         folders=folders,
         ralph=ralph,
         default_engine=settings.default_engine,
+        worktrees_dir=settings.worktrees_dir,
+        worktree_base=settings.worktree_base,
         telegram=telegram,
         telegram_group_id=telegram_group_id,
         bot_token=bot_token,
@@ -209,6 +217,10 @@ def save_workspace_config(config: WorkspaceConfig) -> None:
     workspace.add("name", config.name)
     if config.default_engine != "claude":
         workspace.add("default_engine", config.default_engine)
+    if config.worktrees_dir != ".worktrees":
+        workspace.add("worktrees_dir", config.worktrees_dir)
+    if config.worktree_base:
+        workspace.add("worktree_base", config.worktree_base)
     doc.add("workspace", workspace)
 
     # [telegram] section (new format)

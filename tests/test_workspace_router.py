@@ -15,7 +15,9 @@ from pochi.workspace.router import (
     GENERAL_SLASH_COMMANDS,
     RouteResult,
     WorkspaceRouter,
+    extract_context_from_text,
     is_general_slash_command,
+    parse_branch_directive,
     parse_slash_command,
 )
 
@@ -332,3 +334,178 @@ class TestGeneralSlashCommands:
         router = WorkspaceRouter(config)
         route = router.route(None, "just a message")
         assert is_general_slash_command(route) is False
+
+
+class TestParseBranchDirective:
+    """Tests for parse_branch_directive function."""
+
+    def test_parses_simple_branch(self) -> None:
+        """Test parsing a simple branch directive."""
+        branch, text = parse_branch_directive("@feature-foo implement this")
+        assert branch == "feature-foo"
+        assert text == "implement this"
+
+    def test_parses_branch_with_slash(self) -> None:
+        """Test parsing branch with slash."""
+        branch, text = parse_branch_directive("@feature/new-auth fix the bug")
+        assert branch == "feature/new-auth"
+        assert text == "fix the bug"
+
+    def test_parses_branch_no_text(self) -> None:
+        """Test parsing branch directive with no remaining text."""
+        branch, text = parse_branch_directive("@main")
+        assert branch == "main"
+        assert text == ""
+
+    def test_no_directive_returns_none(self) -> None:
+        """Test text without directive returns None branch."""
+        branch, text = parse_branch_directive("just some text")
+        assert branch is None
+        assert text == "just some text"
+
+    def test_empty_string(self) -> None:
+        """Test empty string returns None branch."""
+        branch, text = parse_branch_directive("")
+        assert branch is None
+        assert text == ""
+
+    def test_at_symbol_alone(self) -> None:
+        """Test @ alone is not a branch directive."""
+        branch, text = parse_branch_directive("@ foo")
+        assert branch is None
+        assert text == "@ foo"
+
+    def test_at_in_middle_of_text(self) -> None:
+        """Test @ in middle of text is not a directive."""
+        branch, text = parse_branch_directive("send email to user@example.com")
+        assert branch is None
+        assert text == "send email to user@example.com"
+
+    def test_strips_leading_whitespace_from_remaining(self) -> None:
+        """Test remaining text has leading whitespace stripped."""
+        branch, text = parse_branch_directive("@branch    lots of space")
+        assert branch == "branch"
+        assert text == "lots of space"
+
+    def test_branch_with_numbers(self) -> None:
+        """Test branch name with numbers."""
+        branch, text = parse_branch_directive("@fix-123 debug")
+        assert branch == "fix-123"
+        assert text == "debug"
+
+    def test_branch_with_underscore(self) -> None:
+        """Test branch name with underscore."""
+        branch, text = parse_branch_directive("@feature_new do something")
+        assert branch == "feature_new"
+        assert text == "do something"
+
+    def test_branch_with_dot(self) -> None:
+        """Test branch name with dot."""
+        branch, text = parse_branch_directive("@v1.2.3 release")
+        assert branch == "v1.2.3"
+        assert text == "release"
+
+
+class TestExtractContextFromText:
+    """Tests for extract_context_from_text function."""
+
+    def test_extracts_context_with_branch(self) -> None:
+        """Test extracting context with branch."""
+        text = "Some response\n\n`ctx: backend @ feature/auth`"
+        ctx = extract_context_from_text(text)
+
+        assert ctx is not None
+        assert ctx.folder == "backend"
+        assert ctx.branch == "feature/auth"
+
+    def test_extracts_context_without_branch(self) -> None:
+        """Test extracting context without branch."""
+        text = "`ctx: backend`\nMore text"
+        ctx = extract_context_from_text(text)
+
+        assert ctx is not None
+        assert ctx.folder == "backend"
+        assert ctx.branch is None
+
+    def test_returns_none_for_no_context(self) -> None:
+        """Test returns None when no context footer."""
+        text = "No context here"
+        ctx = extract_context_from_text(text)
+        assert ctx is None
+
+
+class TestWorkspaceRouterBranchDirective:
+    """Tests for WorkspaceRouter with branch directive support."""
+
+    @pytest.fixture
+    def workspace_config(self, tmp_path: Path) -> WorkspaceConfig:
+        """Create a workspace config for testing."""
+        folders = {
+            "frontend": FolderConfig(name="frontend", path="frontend", topic_id=100),
+            "backend": FolderConfig(name="backend", path="backend", topic_id=200),
+        }
+        return WorkspaceConfig(
+            name="test-workspace",
+            root=tmp_path,
+            telegram_group_id=999,
+            bot_token="token",
+            folders=folders,
+        )
+
+    def test_parses_branch_directive_in_route(
+        self, workspace_config: WorkspaceConfig
+    ) -> None:
+        """Test routing parses branch directive."""
+        router = WorkspaceRouter(workspace_config)
+        route = router.route(100, "@feature/foo implement this")
+
+        assert route.branch == "feature/foo"
+        assert route.prompt_text == "implement this"
+
+    def test_parses_branch_with_slash_command(
+        self, workspace_config: WorkspaceConfig
+    ) -> None:
+        """Test routing parses branch with slash command."""
+        router = WorkspaceRouter(workspace_config)
+        route = router.route(100, "/claude @feature/foo implement this")
+
+        assert route.is_slash_command is True
+        assert route.command == "claude"
+        assert route.branch == "feature/foo"
+        assert route.prompt_text == "implement this"
+
+    def test_no_branch_in_route(self, workspace_config: WorkspaceConfig) -> None:
+        """Test routing without branch directive."""
+        router = WorkspaceRouter(workspace_config)
+        route = router.route(100, "just a message")
+
+        assert route.branch is None
+        assert route.prompt_text == "just a message"
+
+    def test_extracts_branch_from_reply(
+        self, workspace_config: WorkspaceConfig
+    ) -> None:
+        """Test routing extracts branch from reply context."""
+        router = WorkspaceRouter(workspace_config)
+        reply_text = "Previous response\n\n`ctx: backend @ feature/auth`"
+        route = router.route(200, "continue working", reply_text)
+
+        assert route.branch == "feature/auth"
+
+    def test_explicit_branch_overrides_reply(
+        self, workspace_config: WorkspaceConfig
+    ) -> None:
+        """Test explicit @branch overrides reply context."""
+        router = WorkspaceRouter(workspace_config)
+        reply_text = "Previous response\n\n`ctx: backend @ feature/old`"
+        route = router.route(200, "@feature/new do something else", reply_text)
+
+        assert route.branch == "feature/new"
+
+    def test_branch_in_general_topic(self, workspace_config: WorkspaceConfig) -> None:
+        """Test branch directive in general topic (not typical but supported)."""
+        router = WorkspaceRouter(workspace_config)
+        route = router.route(None, "@main test something")
+
+        assert route.is_general is True
+        assert route.branch == "main"

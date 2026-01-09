@@ -77,6 +77,12 @@ class WorkspaceSettings(BaseSettings):
     name: str = ""
     default_engine: str = "claude"
 
+    # Worktree settings
+    worktrees_dir: str = ".worktrees"  # Directory name for worktrees within folders
+    worktree_base: str | None = (
+        None  # Base branch for new worktrees (auto-detect if None)
+    )
+
     # Transport config
     telegram: TelegramSettings | None = None
 
@@ -208,6 +214,8 @@ def load_settings(workspace_root: Path | None = None) -> WorkspaceSettings | Non
         settings = WorkspaceSettings(
             name=workspace_data.get("name", workspace_root.name),
             default_engine=workspace_data.get("default_engine", "claude"),
+            worktrees_dir=workspace_data.get("worktrees_dir", ".worktrees"),
+            worktree_base=workspace_data.get("worktree_base"),
             telegram=_parse_telegram(data),
             folders=_parse_folders(data),
             ralph=_parse_ralph(data),
