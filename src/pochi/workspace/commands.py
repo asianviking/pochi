@@ -73,6 +73,10 @@ async def handle_slash_command(
     command = route.command
     args = route.command_args
 
+    # Guard for None command
+    if command is None:
+        return
+
     handlers = {
         "clone": _handle_clone,
         "create": _handle_create,

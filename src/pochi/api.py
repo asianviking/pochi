@@ -23,7 +23,6 @@ from __future__ import annotations
 from .backends import (
     EngineBackend,
     EngineConfig,
-    SetupIssue,
 )
 from .command_backend import (
     CommandBackend,
@@ -67,6 +66,7 @@ from .settings import ConfigError
 
 # --- Transport backends ---
 from .transport_backend import (
+    SetupIssue,
     SetupResult,
     TransportBackend,
 )

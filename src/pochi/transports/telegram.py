@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..backends import SetupIssue
+from ..transport_backend import SetupIssue as PluginSetupIssue
 from ..transport_backend import SetupResult as PluginSetupResult
 from ..transport_registry import SetupResult, TransportBackend
 
@@ -51,21 +51,19 @@ class TelegramTransportBackend:
         if config is None:
             return PluginSetupResult(
                 issues=(
-                    SetupIssue(
+                    PluginSetupIssue(
                         title="No workspace configuration found",
                         lines=("Run 'pochi init' or 'pochi setup' to create one.",),
                     ),
                 ),
             )
 
-        issues: list[SetupIssue] = []
+        issues: list[PluginSetupIssue] = []
 
         # Check for bot token
-        if not config.bot_token and not (
-            config.telegram and config.telegram.bot_token
-        ):
+        if not config.bot_token and not (config.telegram and config.telegram.bot_token):
             issues.append(
-                SetupIssue(
+                PluginSetupIssue(
                     title="Missing bot_token",
                     lines=("Run 'pochi setup' to configure Telegram bot token.",),
                 )
@@ -76,7 +74,7 @@ class TelegramTransportBackend:
             config.telegram and config.telegram.chat_id
         ):
             issues.append(
-                SetupIssue(
+                PluginSetupIssue(
                     title="Missing chat_id",
                     lines=("Run 'pochi setup' to configure Telegram group ID.",),
                 )
@@ -148,9 +146,7 @@ class TelegramTransportBackend:
             SetupResult indicating whether Telegram is ready
         """
         # Check for bot token
-        if not config.bot_token and not (
-            config.telegram and config.telegram.bot_token
-        ):
+        if not config.bot_token and not (config.telegram and config.telegram.bot_token):
             return SetupResult(
                 ready=False,
                 message="Missing bot_token. Run 'pochi setup' to configure.",
