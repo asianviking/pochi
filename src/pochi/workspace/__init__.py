@@ -1,6 +1,6 @@
 """Workspace module for multi-folder support with Telegram topics."""
 
-from .config import (
+from ..config import (
     WorkspaceConfig,
     FolderConfig,
     RalphConfig,

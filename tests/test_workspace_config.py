@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import tomlkit
 
 from pochi.workspace.config import (
     FolderConfig,
     RalphConfig,
     WorkspaceConfig,
-    _parse_workspace_config,
     add_folder_to_workspace,
     create_workspace,
     find_workspace_root,
@@ -19,6 +19,15 @@ from pochi.workspace.config import (
     WORKSPACE_CONFIG_DIR,
     WORKSPACE_CONFIG_FILE,
 )
+
+
+def _write_config_from_dict(data: dict, tmp_path: Path) -> Path:
+    """Helper to write config dict to TOML file for testing."""
+    config_dir = tmp_path / WORKSPACE_CONFIG_DIR
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / WORKSPACE_CONFIG_FILE
+    config_path.write_text(tomlkit.dumps(data))
+    return config_path
 
 
 class TestFolderConfig:
@@ -229,19 +238,21 @@ default_max_iterations = 5
 
 
 class TestParseWorkspaceConfig:
-    """Tests for _parse_workspace_config function."""
+    """Tests for config parsing via load_workspace_config."""
 
     def test_parses_minimal_config(self, tmp_path: Path) -> None:
-        """Test _parse_workspace_config parses minimal config."""
+        """Test parsing minimal config."""
         data: dict = {"workspace": {}}
-        config = _parse_workspace_config(data, tmp_path)
+        _write_config_from_dict(data, tmp_path)
+        config = load_workspace_config(tmp_path)
+        assert config is not None
         assert config.name == tmp_path.name
         assert config.telegram_group_id == 0
         assert config.bot_token == ""
         assert config.default_engine == "claude"
 
     def test_parses_folders_section(self, tmp_path: Path) -> None:
-        """Test _parse_workspace_config parses folders section."""
+        """Test parsing folders section."""
         data = {
             "workspace": {"name": "test"},
             "folders": {
@@ -254,7 +265,9 @@ class TestParseWorkspaceConfig:
                 }
             },
         }
-        config = _parse_workspace_config(data, tmp_path)
+        _write_config_from_dict(data, tmp_path)
+        config = load_workspace_config(tmp_path)
+        assert config is not None
         assert "backend" in config.folders
         folder = config.folders["backend"]
         assert folder.path == "backend"
@@ -264,7 +277,7 @@ class TestParseWorkspaceConfig:
         assert folder.pending_topic is True
 
     def test_migrates_legacy_repos_section(self, tmp_path: Path) -> None:
-        """Test _parse_workspace_config migrates legacy [repos] section."""
+        """Test parsing migrates legacy [repos] section."""
         data = {
             "workspace": {"name": "test"},
             "repos": {
@@ -274,7 +287,9 @@ class TestParseWorkspaceConfig:
                 }
             },
         }
-        config = _parse_workspace_config(data, tmp_path)
+        _write_config_from_dict(data, tmp_path)
+        config = load_workspace_config(tmp_path)
+        assert config is not None
         assert "legacy-repo" in config.folders
         assert config.folders["legacy-repo"].topic_id == 300
 

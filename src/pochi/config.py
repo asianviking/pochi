@@ -1,26 +1,48 @@
-"""Workspace configuration loading and management."""
+"""Workspace configuration loading and management.
+
+This module provides the runtime configuration model (WorkspaceConfig) and
+conversion from pydantic settings. The dataclass-based WorkspaceConfig is
+kept for backward compatibility with existing code.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
-import tomllib
+import tomlkit
 
+from .config_store import (
+    WORKSPACE_CONFIG_DIR,
+    WORKSPACE_CONFIG_FILE,
+)
 from .logging import get_logger
+from .settings import (
+    ConfigError,
+    WorkspaceSettings,
+    find_workspace_root,
+    load_settings,
+)
 from .transport import ChannelId
 
 logger = get_logger(__name__)
 
-WORKSPACE_CONFIG_DIR = ".pochi"
-WORKSPACE_CONFIG_FILE = "workspace.toml"
-
-
-class ConfigError(RuntimeError):
-    """Configuration error."""
-
-    pass
+# Re-export for backward compatibility
+__all__ = [
+    "ConfigError",
+    "FolderConfig",
+    "RalphConfig",
+    "TelegramConfig",
+    "WorkspaceConfig",
+    "add_folder_to_workspace",
+    "create_workspace",
+    "find_workspace_root",
+    "load_workspace_config",
+    "save_workspace_config",
+    "update_folder_topic_id",
+    "WORKSPACE_CONFIG_DIR",
+    "WORKSPACE_CONFIG_FILE",
+]
 
 
 @dataclass
@@ -37,11 +59,11 @@ class FolderConfig:
 
     name: str
     path: str  # Relative to workspace root
-    channels: list[ChannelId] = field(default_factory=list)  # Multi-transport channels
-    topic_id: int | None = None  # Legacy: Telegram topic ID
+    channels: list[ChannelId] = field(default_factory=list)
+    topic_id: int | None = None
     description: str | None = None
-    origin: str | None = None  # Git remote URL if cloned
-    pending_topic: bool = False  # True if topic needs to be created
+    origin: str | None = None
+    pending_topic: bool = False
 
     def absolute_path(self, workspace_root: Path) -> Path:
         """Get the absolute path to this folder."""
@@ -58,7 +80,7 @@ class TelegramConfig:
     """Telegram transport configuration."""
 
     bot_token: str
-    chat_id: int  # Group ID
+    chat_id: int
 
 
 @dataclass
@@ -71,7 +93,7 @@ class WorkspaceConfig:
     ralph: RalphConfig = field(default_factory=RalphConfig)
     default_engine: str = "claude"
 
-    # Transport configs - presence enables transport
+    # Transport configs
     telegram: TelegramConfig | None = None
 
     # Legacy fields for backwards compatibility
@@ -101,113 +123,76 @@ class WorkspaceConfig:
         return self.root / WORKSPACE_CONFIG_DIR / WORKSPACE_CONFIG_FILE
 
 
-def find_workspace_root(start_path: Path | None = None) -> Path | None:
-    """Walk up from start_path to find a workspace root (contains .pochi/workspace.toml)."""
-    if start_path is None:
-        start_path = Path.cwd()
+def _settings_to_config(settings: WorkspaceSettings, root: Path) -> WorkspaceConfig:
+    """Convert WorkspaceSettings to WorkspaceConfig dataclass."""
+    # Convert folders
+    folders: dict[str, FolderConfig] = {}
+    for name, folder_settings in settings.folders.items():
+        folders[name] = FolderConfig(
+            name=name,
+            path=folder_settings.path,
+            channels=folder_settings.channels,
+            topic_id=folder_settings.topic_id,
+            description=folder_settings.description,
+            origin=folder_settings.origin,
+            pending_topic=folder_settings.pending_topic,
+        )
 
-    current = start_path.resolve()
-    while current != current.parent:
-        config_path = current / WORKSPACE_CONFIG_DIR / WORKSPACE_CONFIG_FILE
-        if config_path.exists():
-            return current
-        current = current.parent
+    # Convert ralph
+    ralph = RalphConfig(
+        enabled=settings.ralph.enabled,
+        default_max_iterations=settings.ralph.default_max_iterations,
+    )
 
-    # Check root as well
-    config_path = current / WORKSPACE_CONFIG_DIR / WORKSPACE_CONFIG_FILE
-    if config_path.exists():
-        return current
+    # Convert telegram
+    telegram: TelegramConfig | None = None
+    if settings.telegram:
+        telegram = TelegramConfig(
+            bot_token=settings.telegram.bot_token.get_secret_value(),
+            chat_id=settings.telegram.chat_id,
+        )
 
-    return None
+    # Get legacy fields (for backward compatibility)
+    bot_token = ""
+    telegram_group_id = 0
+    if settings.telegram:
+        bot_token = settings.telegram.bot_token.get_secret_value()
+        telegram_group_id = settings.telegram.chat_id
+    elif settings.bot_token:
+        bot_token = settings.bot_token.get_secret_value()
+        telegram_group_id = settings.telegram_group_id or 0
+
+    return WorkspaceConfig(
+        name=settings.name or root.name,
+        root=root,
+        folders=folders,
+        ralph=ralph,
+        default_engine=settings.default_engine,
+        telegram=telegram,
+        telegram_group_id=telegram_group_id,
+        bot_token=bot_token,
+    )
 
 
 def load_workspace_config(workspace_root: Path | None = None) -> WorkspaceConfig | None:
-    """Load workspace configuration from .pochi/workspace.toml."""
+    """Load workspace configuration from .pochi/workspace.toml.
+
+    Args:
+        workspace_root: Path to workspace root. If None, will search for it.
+
+    Returns:
+        WorkspaceConfig if found and valid, None otherwise.
+    """
     if workspace_root is None:
         workspace_root = find_workspace_root()
         if workspace_root is None:
             return None
 
-    config_path = workspace_root / WORKSPACE_CONFIG_DIR / WORKSPACE_CONFIG_FILE
-    if not config_path.exists():
+    settings = load_settings(workspace_root)
+    if settings is None:
         return None
 
-    try:
-        with open(config_path, "rb") as f:
-            data = tomllib.load(f)
-    except Exception as e:
-        logger.error(
-            "workspace.config.load_failed",
-            path=str(config_path),
-            error=str(e),
-        )
-        return None
-
-    return _parse_workspace_config(data, workspace_root)
-
-
-def _parse_workspace_config(data: dict[str, Any], root: Path) -> WorkspaceConfig:
-    """Parse raw TOML data into WorkspaceConfig."""
-    workspace_data = data.get("workspace", {})
-
-    # Parse folders (with migration from legacy [repos.*] section)
-    folders: dict[str, FolderConfig] = {}
-    folders_data = data.get("folders", {})
-
-    # Migrate from legacy [repos.*] if [folders.*] doesn't exist
-    if not folders_data and "repos" in data:
-        folders_data = data.get("repos", {})
-
-    for name, folder_data in folders_data.items():
-        # Parse channels list
-        channels_raw = folder_data.get("channels", [])
-        channels = list(channels_raw) if isinstance(channels_raw, list) else []
-
-        folders[name] = FolderConfig(
-            name=name,
-            path=folder_data.get("path", name),
-            channels=channels,
-            topic_id=folder_data.get("topic_id"),
-            description=folder_data.get("description"),
-            origin=folder_data.get("origin"),
-            pending_topic=folder_data.get("pending_topic", False),
-        )
-
-    # Parse ralph config
-    ralph_data = data.get("workers", {}).get("ralph", {})
-    ralph = RalphConfig(
-        enabled=ralph_data.get("enabled", False),
-        default_max_iterations=ralph_data.get("default_max_iterations", 3),
-    )
-
-    # Parse telegram config (new format)
-    telegram: TelegramConfig | None = None
-    telegram_data = data.get("telegram", {})
-    if telegram_data:
-        telegram = TelegramConfig(
-            bot_token=telegram_data.get("bot_token", ""),
-            chat_id=telegram_data.get("chat_id", 0),
-        )
-
-    # Legacy fields for backwards compatibility
-    telegram_group_id = workspace_data.get("telegram_group_id", 0)
-    bot_token = workspace_data.get("bot_token", "")
-
-    # If new telegram section exists, use those values for legacy fields
-    if telegram:
-        telegram_group_id = telegram.chat_id
-        bot_token = telegram.bot_token
-
-    return WorkspaceConfig(
-        name=workspace_data.get("name", root.name),
-        root=root,
-        folders=folders,
-        ralph=ralph,
-        default_engine=workspace_data.get("default_engine", "claude"),
-        telegram=telegram,
-        telegram_group_id=telegram_group_id,
-        bot_token=bot_token,
-    )
+    return _settings_to_config(settings, workspace_root)
 
 
 def save_workspace_config(config: WorkspaceConfig) -> None:
@@ -216,51 +201,57 @@ def save_workspace_config(config: WorkspaceConfig) -> None:
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / WORKSPACE_CONFIG_FILE
 
-    lines: list[str] = []
+    # Build TOML document using tomlkit for proper formatting
+    doc = tomlkit.document()
 
-    # Workspace section
-    lines.append("[workspace]")
-    lines.append(f'name = "{config.name}"')
-    # Keep legacy fields for now
-    lines.append(f"telegram_group_id = {config.telegram_group_id}")
-    lines.append(f'bot_token = "{config.bot_token}"')
+    # [workspace] section
+    workspace = tomlkit.table()
+    workspace.add("name", config.name)
     if config.default_engine != "claude":
-        lines.append(f'default_engine = "{config.default_engine}"')
-    lines.append("")
+        workspace.add("default_engine", config.default_engine)
+    doc.add("workspace", workspace)
 
-    # Telegram section (new format)
+    # [telegram] section (new format)
     if config.telegram:
-        lines.append("[telegram]")
-        lines.append(f'bot_token = "{config.telegram.bot_token}"')
-        lines.append(f"chat_id = {config.telegram.chat_id}")
-        lines.append("")
+        telegram = tomlkit.table()
+        telegram.add("bot_token", config.telegram.bot_token)
+        telegram.add("chat_id", config.telegram.chat_id)
+        doc.add("telegram", telegram)
+    elif config.bot_token:
+        # Legacy format fallback
+        telegram = tomlkit.table()
+        telegram.add("bot_token", config.bot_token)
+        telegram.add("chat_id", config.telegram_group_id)
+        doc.add("telegram", telegram)
 
-    # Folders sections
-    for name, folder in config.folders.items():
-        lines.append(f"[folders.{name}]")
-        lines.append(f'path = "{folder.path}"')
-        if folder.channels:
-            channels_str = ", ".join(f'"{c}"' for c in folder.channels)
-            lines.append(f"channels = [{channels_str}]")
-        if folder.topic_id is not None:
-            lines.append(f"topic_id = {folder.topic_id}")
-        if folder.description:
-            lines.append(f'description = "{folder.description}"')
-        if folder.origin:
-            lines.append(f'origin = "{folder.origin}"')
-        if folder.pending_topic:
-            lines.append("pending_topic = true")
-        lines.append("")
+    # [folders.*] sections
+    if config.folders:
+        folders = tomlkit.table()
+        for name, folder in config.folders.items():
+            folder_table = tomlkit.table()
+            folder_table.add("path", folder.path)
+            if folder.channels:
+                folder_table.add("channels", folder.channels)
+            if folder.topic_id is not None:
+                folder_table.add("topic_id", folder.topic_id)
+            if folder.description:
+                folder_table.add("description", folder.description)
+            if folder.origin:
+                folder_table.add("origin", folder.origin)
+            if folder.pending_topic:
+                folder_table.add("pending_topic", True)
+            folders.add(name, folder_table)
+        doc.add("folders", folders)
 
-    # Ralph section
-    lines.append("[workers.ralph]")
-    lines.append(f"enabled = {'true' if config.ralph.enabled else 'false'}")
-    lines.append(f"default_max_iterations = {config.ralph.default_max_iterations}")
-    lines.append("")
+    # [workers.ralph] section
+    workers = tomlkit.table()
+    ralph = tomlkit.table()
+    ralph.add("enabled", config.ralph.enabled)
+    ralph.add("default_max_iterations", config.ralph.default_max_iterations)
+    workers.add("ralph", ralph)
+    doc.add("workers", workers)
 
-    with open(config_path, "w") as f:
-        f.write("\n".join(lines))
-
+    config_path.write_text(tomlkit.dumps(doc))
     logger.info("workspace.config.saved", path=str(config_path))
 
 

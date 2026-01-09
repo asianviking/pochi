@@ -179,6 +179,8 @@ def app_main(
 
 def _run_workspace(*, final_notify: bool, debug: bool) -> None:
     """Run pochi in workspace mode."""
+    from .config_migrations import migrate_config_file
+    from .config_store import get_config_path
     from .workspace.bridge import WorkspaceBridgeConfig, run_workspace_loop
     from .workspace.manager import WorkspaceManager
     from .workspace.ralph import RalphManager
@@ -193,6 +195,12 @@ def _run_workspace(*, final_notify: bool, debug: bool) -> None:
         )
         typer.echo("Run 'pochi init' to create a workspace here.", err=True)
         raise typer.Exit(code=1)
+
+    # Run config migrations before loading
+    config_path = get_config_path(workspace_root)
+    migrations = migrate_config_file(config_path)
+    if migrations:
+        typer.echo(f"Applied config migrations: {', '.join(migrations)}")
 
     workspace_config = load_workspace_config(workspace_root)
     if workspace_config is None:
@@ -419,6 +427,34 @@ def info_command() -> None:
     else:
         typer.echo("No folders configured yet.")
         typer.echo("Use /clone, /create, or /add in Telegram to add folders.")
+
+
+@app.command("setup", help="Run interactive setup wizard.")
+def setup_command(
+    folder: str = typer.Argument(
+        None,
+        help="Folder to create workspace in (defaults to current directory)",
+    ),
+) -> None:
+    """Run interactive onboarding wizard.
+
+    This command guides you through setting up a Pochi workspace with:
+    - Telegram bot token validation
+    - Group ID detection (automatic or manual)
+    - Configuration file creation
+    """
+    from .onboarding import run_onboarding_sync
+
+    cwd = Path.cwd()
+    if folder:
+        workspace_dir = cwd / folder
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        workspace_dir = cwd
+
+    result = run_onboarding_sync(workspace_dir)
+    if result is None:
+        raise typer.Exit(code=1)
 
 
 def main() -> None:
