@@ -33,7 +33,7 @@ class TestMigrateReposToFolders:
 
     def test_migrates_repos_to_folders(self) -> None:
         """Test moving [repos] to [folders]."""
-        config = {
+        config: dict = {
             "workspace": {"name": "test"},
             "repos": {"my-repo": {"path": "my-repo", "topic_id": 123}},
         }
@@ -43,7 +43,9 @@ class TestMigrateReposToFolders:
         assert result is True
         assert "repos" not in config
         assert "folders" in config
-        assert config["folders"]["my-repo"]["topic_id"] == 123
+        folders = config["folders"]
+        assert isinstance(folders, dict)
+        assert folders["my-repo"]["topic_id"] == 123
 
     def test_does_nothing_if_no_repos(self) -> None:
         """Test no change if repos section doesn't exist."""

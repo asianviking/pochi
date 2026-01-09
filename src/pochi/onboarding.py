@@ -84,7 +84,7 @@ async def detect_chat_from_message(
     bot = TelegramClient(token)
     try:
         # Get initial update_id to only look at new messages
-        updates = await bot.get_updates(timeout=0)
+        updates = await bot.get_updates(offset=None, timeout_s=0)
         last_update_id = 0
         if updates:
             last_update_id = max(u.get("update_id", 0) for u in updates) + 1
@@ -98,20 +98,21 @@ async def detect_chat_from_message(
 
             updates = await bot.get_updates(
                 offset=last_update_id,
-                timeout=min(remaining, 10),
+                timeout_s=min(remaining, 10),
             )
 
-            for update in updates:
-                last_update_id = update.get("update_id", 0) + 1
-                message = update.get("message", {})
-                chat = message.get("chat", {})
-                chat_id = chat.get("id")
-                chat_type = chat.get("type", "")
+            if updates:
+                for update in updates:
+                    last_update_id = update.get("update_id", 0) + 1
+                    message = update.get("message", {})
+                    chat = message.get("chat", {})
+                    chat_id = chat.get("id")
+                    chat_type = chat.get("type", "")
 
-                # We want group or supergroup chats
-                if chat_id and chat_type in ("group", "supergroup"):
-                    chat_title = chat.get("title", f"Group {chat_id}")
-                    return (chat_id, chat_title)
+                    # We want group or supergroup chats
+                    if chat_id and chat_type in ("group", "supergroup"):
+                        chat_title = chat.get("title", f"Group {chat_id}")
+                        return (chat_id, chat_title)
 
         return None
     finally:
