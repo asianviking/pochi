@@ -105,6 +105,7 @@ class WorkspaceConfig:
     folders: dict[str, FolderConfig] = field(default_factory=dict)
     ralph: RalphConfig = field(default_factory=RalphConfig)
     default_engine: str = "claude"
+    default_transport: str = "telegram"
 
     # Worktree settings
     worktrees_dir: str = ".worktrees"  # Directory name for worktrees within folders
@@ -112,7 +113,10 @@ class WorkspaceConfig:
         None  # Base branch for new worktrees (auto-detect if None)
     )
 
-    # Transport configs
+    # Transport configs (new format: [transports.<id>] sections)
+    transports: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    # Legacy transport config
     telegram: TelegramConfig | None = None
 
     # Plugin configuration
@@ -144,6 +148,37 @@ class WorkspaceConfig:
     def config_path(self) -> Path:
         """Get the path to the workspace config file."""
         return self.root / WORKSPACE_CONFIG_DIR / WORKSPACE_CONFIG_FILE
+
+    def transport_config(self, transport_id: str) -> dict[str, Any]:
+        """Get configuration for a specific transport.
+
+        Checks [transports.<id>] first, falls back to legacy [telegram] section.
+        """
+        # Check new format first
+        if transport_id in self.transports:
+            return self.transports[transport_id]
+
+        # Fall back to legacy telegram section
+        if transport_id == "telegram" and self.telegram:
+            return {
+                "bot_token": self.telegram.bot_token,
+                "chat_id": self.telegram.chat_id,
+            }
+
+        return {}
+
+    def configured_transport_ids(self) -> list[str]:
+        """Get list of transport IDs that have configuration."""
+        ids: list[str] = []
+
+        # Check new format
+        ids.extend(self.transports.keys())
+
+        # Check legacy telegram section (if not already in transports)
+        if "telegram" not in ids and self.telegram:
+            ids.append("telegram")
+
+        return ids
 
 
 def _settings_to_config(settings: WorkspaceSettings, root: Path) -> WorkspaceConfig:
@@ -182,11 +217,17 @@ def _settings_to_config(settings: WorkspaceSettings, root: Path) -> WorkspaceCon
     )
 
     # Get legacy fields (for backward compatibility)
+    # Priority: [telegram] section > [transports.telegram] section > legacy fields
     bot_token = ""
     telegram_group_id = 0
     if settings.telegram:
         bot_token = settings.telegram.bot_token.get_secret_value()
         telegram_group_id = settings.telegram.chat_id
+    elif "telegram" in settings.transports:
+        # New [transports.telegram] format - extract values for legacy fields
+        telegram_transport = settings.transports["telegram"]
+        bot_token = telegram_transport.get("bot_token", "")
+        telegram_group_id = telegram_transport.get("chat_id", 0)
     elif settings.bot_token:
         bot_token = settings.bot_token.get_secret_value()
         telegram_group_id = settings.telegram_group_id or 0
@@ -197,8 +238,10 @@ def _settings_to_config(settings: WorkspaceSettings, root: Path) -> WorkspaceCon
         folders=folders,
         ralph=ralph,
         default_engine=settings.default_engine,
+        default_transport=settings.default_transport,
         worktrees_dir=settings.worktrees_dir,
         worktree_base=settings.worktree_base,
+        transports=settings.transports,
         telegram=telegram,
         plugins=plugins,
         plugin_configs=settings.plugin_configs,
@@ -242,14 +285,25 @@ def save_workspace_config(config: WorkspaceConfig) -> None:
     workspace.add("name", config.name)
     if config.default_engine != "claude":
         workspace.add("default_engine", config.default_engine)
+    if config.default_transport != "telegram":
+        workspace.add("default_transport", config.default_transport)
     if config.worktrees_dir != ".worktrees":
         workspace.add("worktrees_dir", config.worktrees_dir)
     if config.worktree_base:
         workspace.add("worktree_base", config.worktree_base)
     doc.add("workspace", workspace)
 
-    # [telegram] section (new format)
-    if config.telegram:
+    # [transports.<id>] sections (new format)
+    if config.transports:
+        transports = tomlkit.table()
+        for transport_id, transport_cfg in config.transports.items():
+            transport_table = tomlkit.table()
+            for key, value in transport_cfg.items():
+                transport_table.add(key, value)
+            transports.add(transport_id, transport_table)
+        doc.add("transports", transports)
+    elif config.telegram:
+        # Fall back to [telegram] section for backwards compatibility
         telegram = tomlkit.table()
         telegram.add("bot_token", config.telegram.bot_token)
         telegram.add("chat_id", config.telegram.chat_id)

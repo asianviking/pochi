@@ -415,3 +415,87 @@ class TestUpdateFolderTopicId:
         )
         # Should not raise
         update_folder_topic_id(config, "nonexistent", 999)
+
+
+class TestTransportsConfig:
+    """Tests for new [transports.<id>] config format."""
+
+    def test_loads_transports_telegram_section(self, tmp_path: Path) -> None:
+        """Test loading new [transports.telegram] format."""
+        data = {
+            "workspace": {"name": "test"},
+            "transports": {
+                "telegram": {
+                    "bot_token": "new-format-token",
+                    "chat_id": 987654,
+                }
+            },
+        }
+        _write_config_from_dict(data, tmp_path)
+        config = load_workspace_config(tmp_path)
+        assert config is not None
+        assert config.transports == {
+            "telegram": {"bot_token": "new-format-token", "chat_id": 987654}
+        }
+
+    def test_transports_telegram_populates_legacy_fields(self, tmp_path: Path) -> None:
+        """Test that [transports.telegram] populates legacy telegram_group_id and bot_token.
+
+        This is important for backward compatibility - many parts of the codebase
+        still use config.telegram_group_id and config.bot_token.
+        """
+        data = {
+            "workspace": {"name": "test"},
+            "transports": {
+                "telegram": {
+                    "bot_token": "transports-token",
+                    "chat_id": 123456789,
+                }
+            },
+        }
+        _write_config_from_dict(data, tmp_path)
+        config = load_workspace_config(tmp_path)
+        assert config is not None
+        # Legacy fields should be populated from transports.telegram
+        assert config.telegram_group_id == 123456789
+        assert config.bot_token == "transports-token"
+
+    def test_legacy_telegram_section_takes_precedence(self, tmp_path: Path) -> None:
+        """Test that legacy [telegram] section takes precedence over [transports.telegram]."""
+        data = {
+            "workspace": {"name": "test"},
+            "telegram": {
+                "bot_token": "legacy-section-token",
+                "chat_id": 111111,
+            },
+            "transports": {
+                "telegram": {
+                    "bot_token": "transports-token",
+                    "chat_id": 222222,
+                }
+            },
+        }
+        _write_config_from_dict(data, tmp_path)
+        config = load_workspace_config(tmp_path)
+        assert config is not None
+        # Legacy [telegram] section should take precedence
+        assert config.telegram_group_id == 111111
+        assert config.bot_token == "legacy-section-token"
+
+    def test_transport_config_method(self, tmp_path: Path) -> None:
+        """Test WorkspaceConfig.transport_config() method."""
+        data = {
+            "workspace": {"name": "test"},
+            "transports": {
+                "telegram": {
+                    "bot_token": "my-token",
+                    "chat_id": 12345,
+                }
+            },
+        }
+        _write_config_from_dict(data, tmp_path)
+        config = load_workspace_config(tmp_path)
+        assert config is not None
+        tc = config.transport_config("telegram")
+        assert tc["bot_token"] == "my-token"
+        assert tc["chat_id"] == 12345

@@ -36,6 +36,9 @@ def migrate_config(config: dict[str, Any], *, config_path: Path) -> list[str]:
     if _migrate_legacy_telegram(config):
         applied.append("legacy-telegram")
 
+    if _migrate_telegram_to_transports(config):
+        applied.append("telegram-to-transports")
+
     return applied
 
 
@@ -172,4 +175,48 @@ def _migrate_legacy_telegram(config: dict[str, Any]) -> bool:
     if has_legacy_group_id and "chat_id" not in telegram:
         telegram["chat_id"] = workspace.pop("telegram_group_id")
 
+    return True
+
+
+def _migrate_telegram_to_transports(config: dict[str, Any]) -> bool:
+    """Migrate [telegram] section to [transports.telegram].
+
+    Old format:
+        [telegram]
+        bot_token = "..."
+        chat_id = 123456
+
+    New format:
+        [transports.telegram]
+        bot_token = "..."
+        chat_id = 123456
+
+    This migration enables multi-transport support. The [telegram] section
+    remains supported for backwards compatibility, but [transports.telegram]
+    is the preferred format going forward.
+
+    Returns:
+        True if migration was applied
+    """
+    # Check if [telegram] section exists
+    if "telegram" not in config:
+        return False
+
+    telegram = config["telegram"]
+    if not telegram or not isinstance(telegram, dict):
+        return False
+
+    # Don't migrate if [transports.telegram] already exists
+    transports = config.get("transports", {})
+    if "telegram" in transports:
+        # Already migrated - just remove the old section
+        del config["telegram"]
+        return True
+
+    # Create [transports] section if needed
+    if "transports" not in config:
+        config["transports"] = {}
+
+    # Move [telegram] to [transports.telegram]
+    config["transports"]["telegram"] = config.pop("telegram")
     return True

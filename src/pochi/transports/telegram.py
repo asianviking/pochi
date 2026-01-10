@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import anyio
+
+from ..logging import get_logger
 from ..transport_backend import SetupIssue as PluginSetupIssue
 from ..transport_backend import SetupResult as PluginSetupResult
 from ..transport_registry import SetupResult, TransportBackend
@@ -18,6 +21,8 @@ if TYPE_CHECKING:
     from ..backends import EngineBackend
     from ..config import WorkspaceConfig
     from ..transport_runtime import TransportRuntime
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,15 +129,62 @@ class TelegramTransportBackend:
         """Build the transport and run the main loop.
 
         This is the main entry point that starts the Telegram bot loop.
-        Currently delegates to the existing workspace bridge implementation.
         """
-        # The actual implementation is in cli.py's _run_workspace()
-        # This method is for plugin-based transports that manage their own loop.
-        # For now, Telegram uses the legacy path through cli.py
-        raise NotImplementedError(
-            "Telegram transport currently uses legacy startup path. "
-            "Use 'pochi' command instead."
+        from ..telegram import TelegramClient
+        from ..workspace.bridge import WorkspaceBridgeConfig, run_workspace_loop
+        from ..workspace.manager import WorkspaceManager
+        from ..workspace.ralph import RalphManager
+        from ..workspace.router import WorkspaceRouter
+
+        # Extract bot token and chat ID from transport config
+        bot_token = transport_config.get("bot_token")
+        chat_id = transport_config.get("chat_id")
+
+        if not bot_token:
+            raise ValueError("Missing 'bot_token' in transport configuration")
+        if not chat_id:
+            raise ValueError("Missing 'chat_id' in transport configuration")
+
+        # Get workspace config from runtime
+        workspace_config = runtime.workspace_config
+        if workspace_config is None:
+            raise ValueError("TransportRuntime must have workspace_config set")
+
+        # Create Telegram client
+        bot = TelegramClient(bot_token)
+
+        # Create workspace components
+        workspace_router = WorkspaceRouter(workspace_config)
+        workspace_manager = WorkspaceManager(workspace_config, bot)
+        workspace_manager.set_router(workspace_router)
+
+        # Create Ralph manager
+        ralph_manager = RalphManager(workspace_config, bot, runtime.router)
+
+        # Build startup message
+        startup_msg = runtime.build_startup_message(
+            workspace_root=workspace_config.root,
+            final_notify=final_notify,
         )
+
+        cfg = WorkspaceBridgeConfig(
+            bot=bot,
+            router=runtime.router,
+            workspace=workspace_config,
+            workspace_router=workspace_router,
+            workspace_manager=workspace_manager,
+            ralph_manager=ralph_manager,
+            final_notify=final_notify,
+            startup_msg=startup_msg,
+        )
+
+        logger.info(
+            "telegram.starting",
+            chat_id=chat_id,
+            workspace=workspace_config.name,
+        )
+
+        anyio.run(run_workspace_loop, cfg)
 
     # --- Legacy transport_registry protocol methods ---
 
