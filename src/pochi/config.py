@@ -217,11 +217,17 @@ def _settings_to_config(settings: WorkspaceSettings, root: Path) -> WorkspaceCon
     )
 
     # Get legacy fields (for backward compatibility)
+    # Priority: [telegram] section > [transports.telegram] section > legacy fields
     bot_token = ""
     telegram_group_id = 0
     if settings.telegram:
         bot_token = settings.telegram.bot_token.get_secret_value()
         telegram_group_id = settings.telegram.chat_id
+    elif "telegram" in settings.transports:
+        # New [transports.telegram] format - extract values for legacy fields
+        telegram_transport = settings.transports["telegram"]
+        bot_token = telegram_transport.get("bot_token", "")
+        telegram_group_id = telegram_transport.get("chat_id", 0)
     elif settings.bot_token:
         bot_token = settings.bot_token.get_secret_value()
         telegram_group_id = settings.telegram_group_id or 0
