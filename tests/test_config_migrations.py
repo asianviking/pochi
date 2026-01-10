@@ -159,7 +159,7 @@ class TestMigrateTelegramToTransports:
 
     def test_migrates_telegram_to_transports(self) -> None:
         """Test moving [telegram] to [transports.telegram]."""
-        config = {
+        config: dict = {
             "workspace": {"name": "test"},
             "telegram": {
                 "bot_token": "secret-token",
@@ -172,9 +172,10 @@ class TestMigrateTelegramToTransports:
         assert result is True
         assert "telegram" not in config
         assert "transports" in config
-        assert "telegram" in config["transports"]
-        assert config["transports"]["telegram"]["bot_token"] == "secret-token"
-        assert config["transports"]["telegram"]["chat_id"] == 123456
+        transports = config["transports"]
+        assert "telegram" in transports
+        assert transports["telegram"]["bot_token"] == "secret-token"
+        assert transports["telegram"]["chat_id"] == 123456
 
     def test_does_nothing_if_no_telegram(self) -> None:
         """Test no change if telegram section doesn't exist."""
@@ -187,7 +188,7 @@ class TestMigrateTelegramToTransports:
 
     def test_removes_telegram_if_transports_exists(self) -> None:
         """Test removes telegram if transports.telegram already exists."""
-        config = {
+        config: dict = {
             "workspace": {"name": "test"},
             "telegram": {"bot_token": "old-token", "chat_id": 111},
             "transports": {"telegram": {"bot_token": "new-token", "chat_id": 999}},
@@ -198,8 +199,9 @@ class TestMigrateTelegramToTransports:
         assert result is True
         assert "telegram" not in config
         # Transports should be unchanged
-        assert config["transports"]["telegram"]["bot_token"] == "new-token"
-        assert config["transports"]["telegram"]["chat_id"] == 999
+        transports = config["transports"]
+        assert transports["telegram"]["bot_token"] == "new-token"
+        assert transports["telegram"]["chat_id"] == 999
 
 
 class TestMigrateConfig:
