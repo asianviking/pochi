@@ -265,12 +265,8 @@ class RalphManager:
                 if match:
                     loop.completed = True
                     loop.summary = match.group(1).strip()
-                    await self.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"✅ Ralph loop completed after {loop.current_iteration} iterations\n\n"
-                        f"Summary: {loop.summary}",
-                        message_thread_id=loop.topic_id,
-                    )
+                    # No separate message needed - the final iteration message
+                    # already contains the full response with resume token
                     return
 
             # Max iterations reached
@@ -449,17 +445,22 @@ class RalphManager:
 
             # Send final response
             completed = outcome.completed
-            final_answer = completed.answer
+            original_answer = completed.answer
+
+            # Strip the RALPH_COMPLETE: line from the displayed answer
+            # since it's an internal signal, not user-facing content
+            display_answer = RALPH_COMPLETE_PATTERN.sub("", original_answer).strip()
+
             if completed.ok is False and completed.error:
-                if final_answer.strip():
-                    final_answer = f"{final_answer}\n\n{completed.error}"
+                if display_answer.strip():
+                    display_answer = f"{display_answer}\n\n{completed.error}"
                 else:
-                    final_answer = str(completed.error)
+                    display_answer = str(completed.error)
 
             sync_resume_token(progress_renderer, completed.resume or outcome.resume)
             final_parts = progress_renderer.render_final_parts(
                 elapsed,
-                final_answer,
+                display_answer,
                 status="done" if completed.ok else "error",
             )
             final_rendered, final_entities = prepare_telegram(final_parts)
@@ -478,7 +479,8 @@ class RalphManager:
                 loop.button_message_text = final_rendered
                 loop.button_message_entities = final_entities
 
-            return final_answer
+            # Return original answer so _run_loop can check for RALPH_COMPLETE
+            return original_answer
 
         finally:
             try:
